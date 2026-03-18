@@ -47,13 +47,13 @@ const globalSearch = async (req, res) => {
 
       // Fee invoices
       pool.query(
-        `SELECT fi.id, fi.invoice_number, fi.status, fi.total_amount,
-                s.full_name AS student_name, fi.invoice_date
+        `SELECT fi.id, fi.invoice_no AS invoice_number, fi.status, fi.total_amount,
+                s.full_name AS student_name, fi.created_at AS invoice_date
          FROM fee_invoices fi
          JOIN students s ON s.id = fi.student_id
-         WHERE fi.invoice_number ILIKE $1
-            OR s.full_name       ILIKE $1
-         ORDER BY fi.invoice_date DESC
+         WHERE fi.invoice_no ILIKE $1
+            OR s.full_name   ILIKE $1
+         ORDER BY fi.created_at DESC
          LIMIT 5`,
         [like]
       ),
@@ -61,7 +61,9 @@ const globalSearch = async (req, res) => {
       // Library books
       pool.query(
         `SELECT b.id, b.title, b.author, b.isbn,
-                bc.name AS category_name, b.available_copies, b.total_copies
+                bc.name AS category_name,
+                (SELECT COUNT(*)::int FROM book_copies WHERE book_id = b.id AND status = 'available') AS available_copies,
+                (SELECT COUNT(*)::int FROM book_copies WHERE book_id = b.id) AS total_copies
          FROM books b
          LEFT JOIN book_categories bc ON bc.id = b.category_id
          WHERE b.title  ILIKE $1
@@ -78,7 +80,7 @@ const globalSearch = async (req, res) => {
                 t.full_name AS teacher_name,
                 (SELECT COUNT(*) FROM students s WHERE s.class_id = c.id AND s.status = 'active')::int AS student_count
          FROM classes c
-         LEFT JOIN teachers t ON t.id = c.class_teacher_id
+         LEFT JOIN teachers t ON t.id = c.teacher_id
          WHERE c.name    ILIKE $1
             OR c.section ILIKE $1
             OR c.grade   ILIKE $1
@@ -100,10 +102,10 @@ const globalSearch = async (req, res) => {
 
       // Announcements
       pool.query(
-        `SELECT id, title, category, priority, created_at
+        `SELECT id, title, announcement_type AS category, priority, created_at
          FROM announcements
          WHERE title   ILIKE $1
-            OR content ILIKE $1
+            OR message ILIKE $1
          ORDER BY created_at DESC
          LIMIT 4`,
         [like]
