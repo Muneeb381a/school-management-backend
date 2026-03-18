@@ -7,7 +7,7 @@ const isLocal = dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1');
 
 const pool = new Pool({
   connectionString: dbUrl,
-  ssl: isLocal ? false : { rejectUnauthorized: false },
+  ...(isLocal ? {} : { ssl: { rejectUnauthorized: true } }),
 });
 
 pool.on('connect', () => {
