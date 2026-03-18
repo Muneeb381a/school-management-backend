@@ -89,10 +89,10 @@ const globalSearch = async (req, res) => {
 
       // Exams
       pool.query(
-        `SELECT e.id, e.name AS exam_name, e.exam_type, e.start_date, e.end_date, e.status
+        `SELECT e.id, e.exam_name, e.exam_type, e.start_date, e.end_date, e.status
          FROM exams e
-         WHERE e.name      ILIKE $1
-            OR e.exam_type ILIKE $1
+         WHERE e.exam_name  ILIKE $1
+            OR e.exam_type  ILIKE $1
          ORDER BY e.start_date DESC
          LIMIT 5`,
         [like]
