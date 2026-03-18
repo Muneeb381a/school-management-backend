@@ -36,6 +36,9 @@ const leaveRoutes        = require('./routes/leaveRoutes');
 
 const app = express();
 
+// Trust Vercel / reverse-proxy headers so express-rate-limit can read real IPs
+app.set('trust proxy', 1);
+
 // Security headers — CSP disabled so Vite/React dev server works
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 
@@ -68,6 +71,7 @@ const loginLimiter = rateLimit({
   message: { success: false, message: 'Too many login attempts. Try again in 15 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => req.ip || req.headers['x-forwarded-for'] || 'unknown',
 });
 
 const apiLimiter = rateLimit({
@@ -76,6 +80,7 @@ const apiLimiter = rateLimit({
   message: { success: false, message: 'Too many requests. Please slow down.' },
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => req.ip || req.headers['x-forwarded-for'] || 'unknown',
 });
 
 app.use('/api/', apiLimiter);

@@ -1,11 +1,13 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-const isProduction = process.env.NODE_ENV === 'production';
+// Use SSL for any remote DB (non-localhost). Works for Neon, Supabase, Railway etc.
+const dbUrl = process.env.DATABASE_URL || '';
+const isLocal = dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1');
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: isProduction ? { rejectUnauthorized: false } : false,
+  connectionString: dbUrl,
+  ssl: isLocal ? false : { rejectUnauthorized: false },
 });
 
 pool.on('connect', () => {
