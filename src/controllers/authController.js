@@ -81,4 +81,39 @@ async function changePassword(req, res) {
   }
 }
 
-module.exports = { login, me, changePassword };
+/* ─── POST /api/auth/setup ─────────────────────────────────── */
+// Only works when zero admin users exist — first-run setup protection
+async function setup(req, res) {
+  const { username, password, name } = req.body;
+  if (!username || !password || !name)
+    return res.status(400).json({ success: false, message: 'username, password and name are required' });
+  if (password.length < 6)
+    return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+
+  try {
+    const { rows } = await pool.query(
+      "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
+    );
+    if (rows.length > 0)
+      return res.status(403).json({ success: false, message: 'Setup already complete. Please login.' });
+
+    const hashed = await bcrypt.hash(password, 10);
+    const { rows: created } = await pool.query(
+      `INSERT INTO users (username, password, role, name, is_active)
+       VALUES ($1, $2, 'admin', $3, TRUE) RETURNING id, username, name, role`,
+      [username.trim().toLowerCase(), hashed, name.trim()]
+    );
+
+    const payload = { id: created[0].id, username: created[0].username, name: created[0].name, role: 'admin' };
+    const token   = jwt.sign(payload, JWT_SECRET, { expiresIn: TOKEN_TTL });
+
+    return res.status(201).json({ success: true, data: { token, user: payload }, message: 'Admin account created' });
+  } catch (err) {
+    if (err.code === '23505')
+      return res.status(409).json({ success: false, message: 'Username already taken' });
+    console.error(err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+}
+
+module.exports = { login, me, changePassword, setup };
