@@ -1,0 +1,10 @@
+node_modules/
+.env
+dist/
+
+.claude
+.claude/
+.vscode/
+
+src/db/migrations/
+src/db/migrate.js
