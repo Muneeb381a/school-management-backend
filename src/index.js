@@ -86,7 +86,15 @@ const apiLimiter = rateLimit({
 app.use('/api/', apiLimiter);
 
 // Public routes (no JWT required)
-app.get('/api/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+app.get('/api/health', async (_req, res) => {
+  const pool = require('./db');
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'ok', db: 'connected', timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.status(500).json({ status: 'ok', db: 'error', error: err.message, timestamp: new Date().toISOString() });
+  }
+});
 app.use('/api/auth/login', loginLimiter);
 app.use('/api/auth', authRoutes);
 

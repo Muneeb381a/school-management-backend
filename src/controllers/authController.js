@@ -112,7 +112,7 @@ async function setup(req, res) {
     if (err.code === '23505')
       return res.status(409).json({ success: false, message: 'Username already taken' });
     console.error(err);
-    return res.status(500).json({ success: false, message: 'Server error' });
+    return res.status(500).json({ success: false, message: 'Server error', detail: err.message });
   }
 }
 
