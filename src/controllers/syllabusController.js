@@ -78,15 +78,14 @@ async function updateTopic(req, res) {
 async function markComplete(req, res) {
   try {
     const { is_completed } = req.body;
-    const teacherId = req.user?.entity_id || null;
+    const done       = !!is_completed;
+    const teacherId  = done && req.user?.entity_id ? parseInt(req.user.entity_id, 10) : null;
+    const doneDate   = done ? new Date().toISOString().slice(0, 10) : null;
     const { rows } = await pool.query(
       `UPDATE syllabus_topics
-       SET is_completed=$1,
-           completed_by=CASE WHEN $1 THEN $2 ELSE NULL END,
-           completed_date=CASE WHEN $1 THEN CURRENT_DATE ELSE NULL END,
-           updated_at=NOW()
-       WHERE id=$3 RETURNING *`,
-      [!!is_completed, teacherId, req.params.id]
+       SET is_completed=$1, completed_by=$2, completed_date=$3, updated_at=NOW()
+       WHERE id=$4 RETURNING *`,
+      [done, teacherId, doneDate, req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Topic not found' });
     res.json({ success: true, data: rows[0] });
