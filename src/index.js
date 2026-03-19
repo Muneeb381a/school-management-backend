@@ -33,6 +33,7 @@ const boardExamRoutes    = require('./routes/boardExamRoutes');
 const incomeRoutes       = require('./routes/incomeRoutes');
 const searchRoutes       = require('./routes/searchRoutes');
 const leaveRoutes        = require('./routes/leaveRoutes');
+const syllabusRoutes     = require('./routes/syllabusRoutes');
 
 const app = express();
 
@@ -128,6 +129,7 @@ app.use('/api/board-exams',   boardExamRoutes);
 app.use('/api/income',        incomeRoutes);
 app.use('/api/search',        searchRoutes);
 app.use('/api/leaves',        leaveRoutes);
+app.use('/api/syllabus',      syllabusRoutes);
 
 // Error handlers
 app.use((_req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
