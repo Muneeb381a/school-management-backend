@@ -3,6 +3,8 @@ const pool     = require('../db');
 const AppError = require('../utils/AppError');
 const { parsePagination, paginationMeta } = require('../utils/pagination');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
+const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
+const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
 
 const ALL_FIELDS = [
   'class_id',
@@ -294,9 +296,169 @@ const resetCredentials = async (req, res, next) => {
   }
 };
 
+// ── GET /api/students/import/template ────────────────────────────
+const getImportTemplate = (_req, res) => {
+  const csv = buildTemplate([
+    { header: 'full_name',    example1: 'Ahmed Ali',       example2: 'Sara Khan' },
+    { header: 'grade',        example1: '5',               example2: '3' },
+    { header: 'gender',       example1: 'male',            example2: 'female' },
+    { header: 'father_name',  example1: 'Ali Khan',        example2: 'Imran Khan' },
+    { header: 'phone',        example1: '03001234567',     example2: '03211234567' },
+    { header: 'date_of_birth',example1: '2012-05-15',      example2: '2014-03-20' },
+    { header: 'b_form_no',    example1: '35202-1234567-1', example2: '' },
+    { header: 'email',        example1: 'ahmed@example.com',example2: '' },
+    { header: 'address',      example1: 'House 1, Street 2, Lahore', example2: '' },
+    { header: 'section',      example1: 'A',               example2: 'B' },
+    { header: 'roll_number',  example1: '101',             example2: '102' },
+    { header: 'admission_date',example1: '2024-04-01',     example2: '2024-04-01' },
+    { header: 'status',       example1: 'active',          example2: 'active' },
+  ]);
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="students_import_template.csv"');
+  res.send(csv);
+};
+
+// ── POST /api/students/import ─────────────────────────────────────
+const importStudents = async (req, res, next) => {
+  if (!req.file) return next(new AppError('CSV file is required.', 400));
+
+  const { headers, rows } = parseCSV(req.file.buffer);
+  if (!rows.length) return next(new AppError('CSV file is empty or has no data rows.', 400));
+
+  const REQUIRED = ['full_name', 'grade', 'gender', 'father_name', 'phone'];
+  if (!REQUIRED.every(f => headers.includes(f))) {
+    return next(new AppError(`CSV missing required columns: ${REQUIRED.join(', ')}`, 400));
+  }
+
+  const { valid, errors } = validateRows(rows, REQUIRED);
+  let imported = 0;
+
+  const client = await pool.connect();
+  try {
+    for (const { rowNum, data } of valid) {
+      try {
+        await client.query('BEGIN');
+        const { rows: ins } = await client.query(
+          `INSERT INTO students
+             (full_name, grade, gender, father_name, phone,
+              date_of_birth, b_form_no, email, address, section,
+              roll_number, admission_date, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+           RETURNING id, full_name`,
+          [
+            data.full_name.trim(),
+            data.grade || null,
+            data.gender || null,
+            data.father_name || null,
+            data.phone || null,
+            data.date_of_birth || null,
+            data.b_form_no || null,
+            data.email || null,
+            data.address || null,
+            data.section || null,
+            data.roll_number || null,
+            data.admission_date || null,
+            data.status || 'active',
+          ]
+        );
+        const student  = ins[0];
+        const username = buildUsername(student.full_name, student.id);
+        const rawPw    = `Stu@${student.id}`;
+        const hashed   = await bcrypt.hash(rawPw, 10);
+        await client.query(
+          `INSERT INTO users (username, password, role, name, entity_id)
+           VALUES ($1,$2,'student',$3,$4) ON CONFLICT (username) DO NOTHING`,
+          [username, hashed, student.full_name, student.id]
+        );
+        await client.query('COMMIT');
+        imported++;
+      } catch (err) {
+        await client.query('ROLLBACK');
+        errors.push({ row: rowNum, message: err.message });
+      }
+    }
+  } finally {
+    client.release();
+  }
+
+  res.json({
+    success:  true,
+    imported,
+    failed:   errors.length,
+    errors,
+    message:  `Import complete. ${imported} student(s) imported, ${errors.length} failed.`,
+  });
+};
+
+// ── GET /api/students/export?format=xlsx ──────────────────────────
+const exportStudents = async (req, res, next) => {
+  try {
+    const { class_id, grade, status, format = 'csv' } = req.query;
+    let where = 'WHERE s.deleted_at IS NULL';
+    const params = [];
+    if (grade)    { params.push(grade);    where += ` AND s.grade = $${params.length}`; }
+    if (status)   { params.push(status);   where += ` AND s.status = $${params.length}`; }
+    if (class_id) { params.push(class_id); where += ` AND s.class_id = $${params.length}`; }
+
+    const { rows } = await pool.query(
+      `SELECT s.full_name, s.roll_number, s.grade, s.section, s.gender,
+              s.b_form_no, s.date_of_birth, s.phone, s.email, s.address,
+              s.father_name, s.father_phone, s.status, s.admission_date,
+              c.name AS class_name
+       FROM students s LEFT JOIN classes c ON c.id = s.class_id
+       ${where} ORDER BY s.grade, s.roll_number`,
+      params
+    );
+
+    if (format === 'xlsx') {
+      const wb = await buildWorkbook({
+        title:     'Student List',
+        sheetName: 'Students',
+        subtitle:  `Total: ${rows.length} students | Exported: ${new Date().toLocaleDateString('en-PK')}`,
+        columns: [
+          { key: 'roll_number',   header: 'Roll No',        width: 10 },
+          { key: 'full_name',     header: 'Full Name',      width: 22 },
+          { key: 'class_name',    header: 'Class',          width: 14 },
+          { key: 'grade',         header: 'Grade',          width: 8  },
+          { key: 'section',       header: 'Section',        width: 9  },
+          { key: 'gender',        header: 'Gender',         width: 10 },
+          { key: 'date_of_birth', header: 'Date of Birth',  width: 14 },
+          { key: 'b_form_no',     header: 'B-Form No',      width: 18 },
+          { key: 'phone',         header: 'Phone',          width: 14 },
+          { key: 'email',         header: 'Email',          width: 22 },
+          { key: 'father_name',   header: 'Father Name',    width: 20 },
+          { key: 'father_phone',  header: 'Father Phone',   width: 14 },
+          { key: 'address',       header: 'Address',        width: 28 },
+          { key: 'status',        header: 'Status',         width: 10 },
+          { key: 'admission_date',header: 'Admission Date', width: 14 },
+        ],
+        rows,
+      });
+      return sendWorkbook(res, wb, `students_${new Date().toISOString().slice(0,10)}.xlsx`);
+    }
+
+    // Default: CSV (original behaviour preserved)
+    const q   = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const hdr = ['Roll No','Full Name','Class','Grade','Section','Gender','DOB','B-Form','Phone','Email','Father','Father Phone','Address','Status','Admission Date'];
+    const csv = [hdr, ...rows.map(r => [
+      r.roll_number, r.full_name, r.class_name, r.grade, r.section, r.gender,
+      r.date_of_birth?.toString().slice(0,10), r.b_form_no, r.phone, r.email,
+      r.father_name, r.father_phone, r.address, r.status,
+      r.admission_date?.toString().slice(0,10),
+    ].map(q))].map(row => row.join(',')).join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="students_${new Date().toISOString().slice(0,10)}.csv"`);
+    res.send(csv);
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   getAllStudents, getStudentById, createStudent, updateStudent, deleteStudent,
   getDeletedStudents, restoreStudent,
   promoteStudents,
   uploadPhoto, listDocuments, uploadDocument, deleteDocument, resetCredentials,
+  getImportTemplate, importStudents, exportStudents,
 };

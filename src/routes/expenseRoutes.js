@@ -4,11 +4,18 @@ const {
   getCategories, createCategory, updateCategory,
   getExpenses, getExpenseById, createExpense, updateExpense, deleteExpense,
   getMonthlyReport, getYearlyReport, getByCategoryReport, getSummary,
+  getImportTemplate, importExpenses, exportExpenses,
 } = require('../controllers/expenseController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
+const { csvUpload }       = require('../middleware/upload');
 
 router.use(auditMiddleware('expense'));
+
+// Import / Export
+router.get('/import/template', requireRole('admin'), getImportTemplate);
+router.post('/import',         requireRole('admin'), csvUpload.single('file'), importExpenses);
+router.get('/export',          requireRole('admin', 'teacher'), exportExpenses);
 
 // Categories — admin only for mutations
 router.get('/categories',      requireRole('admin', 'teacher'), getCategories);

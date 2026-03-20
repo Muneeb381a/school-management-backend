@@ -3,12 +3,15 @@ const router  = express.Router();
 const {
   getSalaryStructures, getTeacherSalaryStructure, upsertSalaryStructure,
   getSalaryPayments, generateMonthlySalaries, updateSalaryPayment, markSalaryPaid, getSalarySlip,
-  bulkMarkSalaryPaid,
+  bulkMarkSalaryPaid, exportSalary,
 } = require('../controllers/salaryController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
 
 router.use(auditMiddleware('salary'));
+
+// Export (CSV / Excel)
+router.get('/export', requireRole('admin'), exportSalary);
 
 // ── Salary Structures — admin only (financial configuration) ──
 router.get('/structures',            requireRole('admin'),            getSalaryStructures);

@@ -1,4 +1,5 @@
 const pool = require('../db');
+const { buildWorkbook, sendWorkbook } = require('../utils/excelExport');
 
 const serverErr = (res, err) => {
   console.error('[SALARY]', err.message);
@@ -232,8 +233,64 @@ const bulkMarkSalaryPaid = async (req, res) => {
   } finally { client.release(); }
 };
 
+// ── GET /api/salary/export?month=YYYY-MM&format=xlsx ─────────────
+const exportSalary = async (req, res, next) => {
+  try {
+    const { month, format = 'csv' } = req.query;
+    const params = [];
+    let where = 'WHERE 1=1';
+    if (month) { params.push(month); where += ` AND sp.month = $${params.length}`; }
+
+    const { rows } = await pool.query(
+      `SELECT t.full_name, t.subject, sp.month, sp.basic_salary,
+              sp.allowances, sp.deductions, sp.net_salary, sp.status,
+              sp.payment_date, sp.remarks
+       FROM salary_payments sp
+       JOIN teachers t ON t.id = sp.teacher_id
+       ${where} ORDER BY sp.month DESC, t.full_name`,
+      params
+    );
+
+    if (format === 'xlsx') {
+      const wb = await buildWorkbook({
+        title:     `Salary Sheet — ${month || 'All Months'}`,
+        sheetName: 'Salary',
+        subtitle:  `Total: ${rows.length} records | Net Payable: PKR ${rows.reduce((s,r) => s + Number(r.net_salary || 0), 0).toLocaleString()}`,
+        columns: [
+          { key: 'full_name',    header: 'Teacher Name',   width: 22 },
+          { key: 'subject',      header: 'Subject',        width: 16 },
+          { key: 'month',        header: 'Month',          width: 12 },
+          { key: 'basic_salary', header: 'Basic Salary',   width: 14, numFmt: '#,##0.00' },
+          { key: 'allowances',   header: 'Allowances',     width: 13, numFmt: '#,##0.00' },
+          { key: 'deductions',   header: 'Deductions',     width: 13, numFmt: '#,##0.00' },
+          { key: 'net_salary',   header: 'Net Salary',     width: 14, numFmt: '#,##0.00' },
+          { key: 'status',       header: 'Status',         width: 10 },
+          { key: 'payment_date', header: 'Payment Date',   width: 14 },
+          { key: 'remarks',      header: 'Remarks',        width: 20 },
+        ],
+        rows,
+      });
+      return sendWorkbook(res, wb, `salary_${month || 'all'}_${new Date().toISOString().slice(0,10)}.xlsx`);
+    }
+
+    const q   = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const hdr = ['Teacher','Subject','Month','Basic','Allowances','Deductions','Net Salary','Status','Payment Date'];
+    const csv = [hdr, ...rows.map(r => [
+      r.full_name, r.subject, r.month, r.basic_salary,
+      r.allowances, r.deductions, r.net_salary, r.status,
+      r.payment_date?.toString().slice(0,10),
+    ].map(q))].map(row => row.join(',')).join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="salary_${month || 'all'}.csv"`);
+    res.send(csv);
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   getSalaryStructures, getTeacherSalaryStructure, upsertSalaryStructure,
   getSalaryPayments, generateMonthlySalaries, updateSalaryPayment, markSalaryPaid, getSalarySlip,
-  bulkMarkSalaryPaid,
+  bulkMarkSalaryPaid, exportSalary,
 };

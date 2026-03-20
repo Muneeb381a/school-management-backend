@@ -1,5 +1,8 @@
-const pool = require('../db');
+const bcrypt = require('bcryptjs');
+const pool   = require('../db');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
+const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
+const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
 
 /* ── helpers ── */
 const notFound = (res) => res.status(404).json({ success: false, message: 'Teacher not found' });
@@ -353,20 +356,147 @@ const removeTeacherFromClass = async (req, res) => {
   } catch (err) { serverErr(res, err); }
 };
 
+// ── GET /api/teachers/import/template ────────────────────────────
+const getImportTemplate = (_req, res) => {
+  const csv = buildTemplate([
+    { header: 'full_name',     example1: 'Tariq Mehmood',      example2: 'Amina Bibi' },
+    { header: 'subject',       example1: 'Mathematics',        example2: 'English' },
+    { header: 'phone',         example1: '03001234567',        example2: '03211234567' },
+    { header: 'email',         example1: 'tariq@school.edu.pk',example2: 'amina@school.edu.pk' },
+    { header: 'gender',        example1: 'male',               example2: 'female' },
+    { header: 'qualification', example1: 'M.Sc Mathematics',   example2: 'B.Ed' },
+    { header: 'join_date',     example1: '2024-01-15',         example2: '2024-02-01' },
+    { header: 'status',        example1: 'active',             example2: 'active' },
+    { header: 'address',       example1: 'House 5, Lahore',    example2: '' },
+  ]);
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="teachers_import_template.csv"');
+  res.send(csv);
+};
+
+// ── POST /api/teachers/import ─────────────────────────────────────
+const importTeachers = async (req, res, next) => {
+  if (!req.file) return next(new (require('../utils/AppError'))('CSV file is required.', 400));
+
+  const { headers, rows } = parseCSV(req.file.buffer);
+  if (!rows.length) return next(new (require('../utils/AppError'))('CSV file is empty.', 400));
+
+  const REQUIRED = ['full_name', 'subject', 'phone'];
+  if (!REQUIRED.every(f => headers.includes(f))) {
+    return next(new (require('../utils/AppError'))(`CSV missing required columns: ${REQUIRED.join(', ')}`, 400));
+  }
+
+  const { valid, errors } = validateRows(rows, REQUIRED);
+  let imported = 0;
+
+  const client = await pool.connect();
+  try {
+    for (const { rowNum, data } of valid) {
+      try {
+        await client.query('BEGIN');
+        const { rows: ins } = await client.query(
+          `INSERT INTO teachers (full_name, subject, phone, email, gender, qualification, join_date, status, address)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, full_name`,
+          [
+            data.full_name.trim(),
+            data.subject || null,
+            data.phone || null,
+            data.email || null,
+            data.gender || null,
+            data.qualification || null,
+            data.join_date || null,
+            data.status || 'active',
+            data.address || null,
+          ]
+        );
+        const teacher  = ins[0];
+        const base     = (teacher.full_name || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 5).padEnd(3, 'x');
+        const username = `tch_${base}${teacher.id}`;
+        const rawPw    = `Tch@${teacher.id}`;
+        const hashed   = await bcrypt.hash(rawPw, 10);
+        await client.query(
+          `INSERT INTO users (username, password, role, name, entity_id)
+           VALUES ($1,$2,'teacher',$3,$4) ON CONFLICT (username) DO NOTHING`,
+          [username, hashed, teacher.full_name, teacher.id]
+        );
+        await client.query('COMMIT');
+        imported++;
+      } catch (err) {
+        await client.query('ROLLBACK');
+        errors.push({ row: rowNum, message: err.message });
+      }
+    }
+  } finally {
+    client.release();
+  }
+
+  res.json({
+    success: true,
+    imported,
+    failed:  errors.length,
+    errors,
+    message: `Import complete. ${imported} teacher(s) imported, ${errors.length} failed.`,
+  });
+};
+
+// ── GET /api/teachers/export?format=xlsx ─────────────────────────
+const exportTeachers = async (req, res, next) => {
+  try {
+    const { format = 'csv', status } = req.query;
+    const params = [];
+    let where = 'WHERE t.deleted_at IS NULL';
+    if (status) { params.push(status); where += ` AND t.status = $${params.length}`; }
+
+    const { rows } = await pool.query(
+      `SELECT t.full_name, t.email, t.phone, t.gender, t.subject, t.qualification,
+              t.join_date, t.status, t.address,
+              COUNT(DISTINCT tc.class_id)::int AS class_count
+       FROM teachers t LEFT JOIN teacher_classes tc ON tc.teacher_id = t.id
+       ${where} GROUP BY t.id ORDER BY t.full_name`,
+      params
+    );
+
+    if (format === 'xlsx') {
+      const wb = await buildWorkbook({
+        title: 'Teacher List', sheetName: 'Teachers',
+        subtitle: `Total: ${rows.length} teachers | Exported: ${new Date().toLocaleDateString('en-PK')}`,
+        columns: [
+          { key: 'full_name',     header: 'Full Name',      width: 22 },
+          { key: 'subject',       header: 'Subject',        width: 18 },
+          { key: 'email',         header: 'Email',          width: 24 },
+          { key: 'phone',         header: 'Phone',          width: 14 },
+          { key: 'gender',        header: 'Gender',         width: 10 },
+          { key: 'qualification', header: 'Qualification',  width: 20 },
+          { key: 'join_date',     header: 'Join Date',      width: 12 },
+          { key: 'class_count',   header: 'Classes',        width: 10 },
+          { key: 'status',        header: 'Status',         width: 10 },
+          { key: 'address',       header: 'Address',        width: 26 },
+        ],
+        rows,
+      });
+      return sendWorkbook(res, wb, `teachers_${new Date().toISOString().slice(0,10)}.xlsx`);
+    }
+
+    const q   = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const hdr = ['Full Name','Subject','Email','Phone','Gender','Qualification','Join Date','Classes','Status'];
+    const csv = [hdr, ...rows.map(r => [
+      r.full_name, r.subject, r.email, r.phone, r.gender,
+      r.qualification, r.join_date?.toString().slice(0,10), r.class_count, r.status,
+    ].map(q))].map(row => row.join(',')).join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="teachers_${new Date().toISOString().slice(0,10)}.csv"`);
+    res.send(csv);
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
-  getTeachers,
-  getTeacher,
-  getTeacherClasses,
-  getTeacherStudents,
-  createTeacher,
-  updateTeacher,
-  deleteTeacher,
-  getDeletedTeachers,
-  restoreTeacher,
-  assignTeacherToClass,
-  removeTeacherFromClass,
-  uploadPhoto,
-  listDocuments,
-  uploadDocument,
-  deleteDocument,
+  getTeachers, getTeacher, getTeacherClasses, getTeacherStudents,
+  createTeacher, updateTeacher, deleteTeacher,
+  getDeletedTeachers, restoreTeacher,
+  assignTeacherToClass, removeTeacherFromClass,
+  uploadPhoto, listDocuments, uploadDocument, deleteDocument,
+  getImportTemplate, importTeachers, exportTeachers,
 };

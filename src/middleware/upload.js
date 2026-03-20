@@ -23,6 +23,18 @@ function makeUploader(allowedTypes) {
 const photoUpload = makeUploader(IMAGE_TYPES);
 const docUpload   = makeUploader(DOC_TYPES);
 
+// CSV upload — accepts text/csv and the Windows application/vnd.ms-excel mime type
+const CSV_TYPES = ['text/csv', 'application/vnd.ms-excel', 'text/plain'];
+const csvUpload = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 10 * 1024 * 1024 }, // 10 MB for large CSV files
+  fileFilter: (_req, file, cb) => {
+    const ok = CSV_TYPES.includes(file.mimetype) || file.originalname.endsWith('.csv');
+    if (ok) return cb(null, true);
+    cb(new Error('Only .csv files are allowed'));
+  },
+});
+
 /**
  * Upload a file buffer to Cloudinary.
  * @param {Buffer} buffer
@@ -66,4 +78,4 @@ async function deleteFromCloudinary(url) {
   }
 }
 
-module.exports = { photoUpload, docUpload, uploadToCloudinary, deleteFromCloudinary };
+module.exports = { photoUpload, docUpload, csvUpload, uploadToCloudinary, deleteFromCloudinary };

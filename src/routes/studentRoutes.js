@@ -6,15 +6,20 @@ const {
   getDeletedStudents, restoreStudent,
   promoteStudents,
   uploadPhoto, listDocuments, uploadDocument, deleteDocument, resetCredentials,
+  getImportTemplate, importStudents, exportStudents,
 } = require('../controllers/studentController');
 
-const { photoUpload, docUpload }  = require('../middleware/upload');
+const { photoUpload, docUpload, csvUpload } = require('../middleware/upload');
 const { requireRole }             = require('../middleware/authMiddleware');
 const { auditMiddleware }         = require('../middleware/auditLog');
 const { createStudentValidator }  = require('../middleware/validate');
 
-// Automatically audit all mutating requests on this router
 router.use(auditMiddleware('student'));
+
+// Import / Export (static paths — BEFORE /:id)
+router.get('/import/template', requireRole('admin'), getImportTemplate);
+router.post('/import',         requireRole('admin'), csvUpload.single('file'), importStudents);
+router.get('/export',          requireRole('admin', 'teacher'), exportStudents);
 
 // List & create
 router.get('/',    requireRole('admin', 'teacher'), getAllStudents);
@@ -24,8 +29,8 @@ router.post('/',   requireRole('admin'),             createStudentValidator, cre
 router.post('/promote', requireRole('admin'), promoteStudents);
 
 // Deleted students (soft delete management)
-router.get('/deleted',           requireRole('admin'), getDeletedStudents);
-router.post('/:id/restore',      requireRole('admin'), restoreStudent);
+router.get('/deleted',      requireRole('admin'), getDeletedStudents);
+router.post('/:id/restore', requireRole('admin'), restoreStudent);
 
 // Single student CRUD
 router.get('/:id',    requireRole('admin', 'teacher'), getStudentById);

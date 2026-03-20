@@ -1,4 +1,7 @@
-const pool = require('../db');
+const pool     = require('../db');
+const AppError = require('../utils/AppError');
+const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
+const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
 
 const serverErr = (res, err) => {
   console.error('[EXPENSES]', err.message);
@@ -487,17 +490,136 @@ const getSummary = async (req, res) => {
   } catch (err) { serverErr(res, err); }
 };
 
+// ── GET /api/expenses/import/template ────────────────────────────
+const getImportTemplate = (_req, res) => {
+  const csv = buildTemplate([
+    { header: 'amount',         example1: '5000',          example2: '1200' },
+    { header: 'category_name',  example1: 'Utilities',     example2: 'Stationery' },
+    { header: 'date',           example1: '2024-01-15',    example2: '2024-01-20' },
+    { header: 'title',          example1: 'Electricity Bill', example2: 'Copy Paper' },
+    { header: 'description',    example1: 'Monthly bill',  example2: '' },
+    { header: 'payment_method', example1: 'bank_transfer', example2: 'cash' },
+    { header: 'vendor',         example1: 'LESCO',         example2: 'ABC Stationery' },
+    { header: 'receipt_no',     example1: 'RCP-001',       example2: '' },
+  ]);
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="expenses_import_template.csv"');
+  res.send(csv);
+};
+
+// ── POST /api/expenses/import ─────────────────────────────────────
+const importExpenses = async (req, res, next) => {
+  if (!req.file) return next(new AppError('CSV file is required.', 400));
+
+  const { headers, rows } = parseCSV(req.file.buffer);
+  if (!rows.length) return next(new AppError('CSV file is empty.', 400));
+
+  const REQUIRED = ['amount', 'category_name', 'date'];
+  if (!REQUIRED.every(f => headers.includes(f))) {
+    return next(new AppError(`CSV missing required columns: ${REQUIRED.join(', ')}`, 400));
+  }
+
+  const { valid, errors } = validateRows(rows, REQUIRED);
+  let imported = 0;
+
+  for (const { rowNum, data } of valid) {
+    try {
+      // Find or create category
+      let { rows: cats } = await pool.query(
+        `SELECT id FROM expense_categories WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+        [data.category_name.trim()]
+      );
+      let catId = cats[0]?.id;
+      if (!catId) {
+        const { rows: newCat } = await pool.query(
+          `INSERT INTO expense_categories (name) VALUES ($1) RETURNING id`,
+          [data.category_name.trim()]
+        );
+        catId = newCat[0].id;
+      }
+
+      await pool.query(
+        `INSERT INTO expenses
+           (category_id, amount, expense_date, title, description, payment_method, vendor, receipt_number, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'approved')`,
+        [
+          catId,
+          parseFloat(data.amount),
+          data.date,
+          data.title || data.category_name,
+          data.description || null,
+          data.payment_method || 'cash',
+          data.vendor || null,
+          data.receipt_no || null,
+        ]
+      );
+      imported++;
+    } catch (err) {
+      errors.push({ row: rowNum, message: err.message });
+    }
+  }
+
+  res.json({
+    success: true, imported, failed: errors.length, errors,
+    message: `Import complete. ${imported} expense(s) imported, ${errors.length} failed.`,
+  });
+};
+
+// ── GET /api/expenses/export?format=xlsx ─────────────────────────
+const exportExpenses = async (req, res, next) => {
+  try {
+    const { format = 'csv', month, year } = req.query;
+    const params = [];
+    let where = 'WHERE 1=1';
+    if (month) { params.push(`${month}%`); where += ` AND e.expense_date::text LIKE $${params.length}`; }
+    if (year)  { params.push(year);        where += ` AND EXTRACT(YEAR FROM e.expense_date) = $${params.length}`; }
+
+    const { rows } = await pool.query(
+      `SELECT e.expense_date, ec.name AS category, e.title, e.description,
+              e.amount, e.payment_method, e.vendor, e.receipt_number, e.status
+       FROM expenses e LEFT JOIN expense_categories ec ON ec.id = e.category_id
+       ${where} ORDER BY e.expense_date DESC`,
+      params
+    );
+
+    if (format === 'xlsx') {
+      const wb = await buildWorkbook({
+        title: 'Expense Ledger', sheetName: 'Expenses',
+        subtitle: `Total: ${rows.length} records | Amount: PKR ${rows.reduce((s,r) => s + Number(r.amount || 0), 0).toLocaleString()}`,
+        columns: [
+          { key: 'expense_date',    header: 'Date',           width: 13 },
+          { key: 'category',        header: 'Category',       width: 16 },
+          { key: 'title',           header: 'Title',          width: 24 },
+          { key: 'description',     header: 'Description',    width: 28 },
+          { key: 'amount',          header: 'Amount (PKR)',   width: 14, numFmt: '#,##0.00' },
+          { key: 'payment_method',  header: 'Payment Method', width: 16 },
+          { key: 'vendor',          header: 'Vendor',         width: 18 },
+          { key: 'receipt_number',  header: 'Receipt No',     width: 14 },
+          { key: 'status',          header: 'Status',         width: 10 },
+        ],
+        rows,
+      });
+      return sendWorkbook(res, wb, `expenses_${new Date().toISOString().slice(0,10)}.xlsx`);
+    }
+
+    const q   = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const hdr = ['Date','Category','Title','Description','Amount','Payment Method','Vendor','Receipt No','Status'];
+    const csv = [hdr, ...rows.map(r => [
+      r.expense_date?.toString().slice(0,10), r.category, r.title, r.description,
+      r.amount, r.payment_method, r.vendor, r.receipt_number, r.status,
+    ].map(q))].map(row => row.join(',')).join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="expenses_${new Date().toISOString().slice(0,10)}.csv"`);
+    res.send(csv);
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
-  getCategories,
-  createCategory,
-  updateCategory,
-  getExpenses,
-  getExpenseById,
-  createExpense,
-  updateExpense,
-  deleteExpense,
-  getMonthlyReport,
-  getYearlyReport,
-  getByCategoryReport,
-  getSummary,
+  getCategories, createCategory, updateCategory,
+  getExpenses, getExpenseById, createExpense, updateExpense, deleteExpense,
+  getMonthlyReport, getYearlyReport, getByCategoryReport, getSummary,
+  getImportTemplate, importExpenses, exportExpenses,
 };

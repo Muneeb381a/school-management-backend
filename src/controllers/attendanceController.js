@@ -1,4 +1,5 @@
 const pool = require('../db');
+const { buildWorkbook, sendWorkbook } = require('../utils/excelExport');
 
 const serverErr = (res, err) => {
   console.error('[ATTENDANCE]', err.message);
@@ -543,6 +544,80 @@ const getAttendanceRegister = async (req, res) => {
   } catch (err) { serverErr(res, err); }
 };
 
+// ── GET /api/attendance/export?format=xlsx ───────────────────────
+const exportAttendanceExcel = async (req, res, next) => {
+  try {
+    const { entity_type = 'student', class_id, month, format = 'csv' } = req.query;
+    if (format !== 'xlsx') return exportCSV(req, res, next);
+
+    const currentMonth = month || new Date().toISOString().slice(0, 7);
+    const [y, m]       = currentMonth.split('-').map(Number);
+    const startDate    = `${currentMonth}-01`;
+    const endDate      = new Date(y, m, 0).toISOString().slice(0, 10);
+
+    let query, params;
+    if (entity_type === 'teacher') {
+      query  = `SELECT t.full_name, t.subject, t.gender,
+                  COUNT(*) FILTER (WHERE a.status='present') AS present,
+                  COUNT(*) FILTER (WHERE a.status='absent')  AS absent,
+                  COUNT(*) FILTER (WHERE a.status='late')    AS late,
+                  COUNT(*) AS total_days
+                FROM teachers t
+                LEFT JOIN attendance a ON a.entity_id = t.id AND a.entity_type='teacher'
+                  AND a.date BETWEEN $1 AND $2
+                WHERE t.deleted_at IS NULL
+                GROUP BY t.id ORDER BY t.full_name`;
+      params = [startDate, endDate];
+    } else {
+      query  = `SELECT s.roll_number, s.full_name, s.gender, s.grade, s.section, c.name AS class_name,
+                  COUNT(*) FILTER (WHERE a.status='present') AS present,
+                  COUNT(*) FILTER (WHERE a.status='absent')  AS absent,
+                  COUNT(*) FILTER (WHERE a.status='late')    AS late,
+                  COUNT(*) AS total_days
+                FROM students s
+                LEFT JOIN classes c ON c.id = s.class_id
+                LEFT JOIN attendance a ON a.entity_id = s.id AND a.entity_type='student'
+                  AND a.date BETWEEN $1 AND $2
+                WHERE s.deleted_at IS NULL ${class_id ? 'AND s.class_id = $3' : ''}
+                GROUP BY s.id, c.name ORDER BY s.grade, s.roll_number`;
+      params = class_id ? [startDate, endDate, class_id] : [startDate, endDate];
+    }
+
+    const { rows } = await pool.query(query, params);
+    const isTeacher = entity_type === 'teacher';
+
+    const wb = await buildWorkbook({
+      title:     `Attendance Register — ${currentMonth}`,
+      sheetName: 'Attendance',
+      subtitle:  `${isTeacher ? 'Teacher' : 'Student'} Attendance | Month: ${currentMonth}`,
+      columns: isTeacher ? [
+        { key: 'full_name',  header: 'Teacher Name', width: 22 },
+        { key: 'subject',    header: 'Subject',      width: 16 },
+        { key: 'gender',     header: 'Gender',       width: 10 },
+        { key: 'present',    header: 'Present',      width: 10 },
+        { key: 'absent',     header: 'Absent',       width: 10 },
+        { key: 'late',       header: 'Late',         width: 8  },
+        { key: 'total_days', header: 'Total Days',   width: 12 },
+      ] : [
+        { key: 'roll_number', header: 'Roll No',     width: 10 },
+        { key: 'full_name',   header: 'Student',     width: 22 },
+        { key: 'class_name',  header: 'Class',       width: 14 },
+        { key: 'grade',       header: 'Grade',       width: 8  },
+        { key: 'section',     header: 'Section',     width: 9  },
+        { key: 'gender',      header: 'Gender',      width: 10 },
+        { key: 'present',     header: 'Present',     width: 10 },
+        { key: 'absent',      header: 'Absent',      width: 10 },
+        { key: 'late',        header: 'Late',        width: 8  },
+        { key: 'total_days',  header: 'Total Days',  width: 12 },
+      ],
+      rows,
+    });
+    return sendWorkbook(res, wb, `attendance_${entity_type}_${currentMonth}.xlsx`);
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   getClassStudentsAttendance,
   getTeachersAttendance,
@@ -553,6 +628,7 @@ module.exports = {
   getMonthlySummary,
   getDailySummary,
   exportCSV,
+  exportAttendanceExcel,
   getStudentHistory,
   getAttendanceRegister,
 };

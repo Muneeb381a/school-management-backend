@@ -10,9 +10,11 @@ const {
   getInvoicePrint, getReceiptPrint, getBulkPrintData, getByClassReport, getDailyReport,
   getConcessions, saveConcession, deleteConcession, applyLateFees,
   getChallanPrint,
+  getPaymentImportTemplate, importFeePayments, exportFeesExcel,
 } = require('../controllers/feeController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
+const { csvUpload }       = require('../middleware/upload');
 
 router.use(auditMiddleware('fee'));
 
@@ -48,6 +50,10 @@ router.get('/invoices/:id',                            requireRole('admin', 'tea
 router.put('/invoices/:id',                            requireRole('admin'),            updateInvoice);
 router.delete('/invoices/:id',                         requireRole('admin'),            cancelInvoice);
 
+// Payment import
+router.get('/payments/import/template', requireRole('admin'), getPaymentImportTemplate);
+router.post('/payments/import',         requireRole('admin'), csvUpload.single('file'), importFeePayments);
+
 // Payments
 router.post('/payments/bulk',          requireRole('admin'),            bulkRecordPayments);
 router.get('/payments/:id/receipt',    requireRole('admin', 'teacher'), getReceiptPrint);
@@ -61,6 +67,6 @@ router.get('/reports/outstanding',     requireRole('admin', 'teacher'), getOutst
 router.get('/reports/by-class',        requireRole('admin', 'teacher'), getByClassReport);
 router.get('/reports/daily',           requireRole('admin', 'teacher'), getDailyReport);
 router.get('/reports/student/:id',     requireRole('admin', 'teacher'), getStudentFeeHistory);
-router.get('/export',                  requireRole('admin'),            exportCSV);
+router.get('/export',                  requireRole('admin'),            exportFeesExcel);
 
 module.exports = router;

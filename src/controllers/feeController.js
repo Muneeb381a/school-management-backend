@@ -1,4 +1,7 @@
-const pool = require('../db');
+const pool     = require('../db');
+const AppError = require('../utils/AppError');
+const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
+const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
 
 const serverErr = (res, err) => {
   console.error('[FEE]', err.message);
@@ -1358,6 +1361,145 @@ const getChallanPrint = async (req, res) => {
   } catch (err) { serverErr(res, err); }
 };
 
+// ── GET /api/fees/payments/import/template ───────────────────────
+const getPaymentImportTemplate = (_req, res) => {
+  const csv = buildTemplate([
+    { header: 'student_roll_number', example1: '101',          example2: '102' },
+    { header: 'amount',              example1: '5000',          example2: '3000' },
+    { header: 'payment_date',        example1: '2024-02-10',    example2: '2024-02-10' },
+    { header: 'payment_method',      example1: 'cash',          example2: 'bank_transfer' },
+    { header: 'reference_number',    example1: 'TXN-001',       example2: '' },
+    { header: 'remarks',             example1: 'Monthly fee',   example2: '' },
+  ]);
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="fee_payments_import_template.csv"');
+  res.send(csv);
+};
+
+// ── POST /api/fees/payments/import ───────────────────────────────
+const importFeePayments = async (req, res, next) => {
+  if (!req.file) return next(new AppError('CSV file is required.', 400));
+
+  const { headers, rows } = parseCSV(req.file.buffer);
+  if (!rows.length) return next(new AppError('CSV file is empty.', 400));
+
+  const REQUIRED = ['student_roll_number', 'amount', 'payment_date'];
+  if (!REQUIRED.every(f => headers.includes(f))) {
+    return next(new AppError(`CSV missing required columns: ${REQUIRED.join(', ')}`, 400));
+  }
+
+  const { valid, errors } = validateRows(rows, REQUIRED);
+  let imported = 0;
+
+  for (const { rowNum, data } of valid) {
+    try {
+      // Look up student by roll number
+      const { rows: stRows } = await pool.query(
+        `SELECT s.id FROM students s WHERE s.roll_number = $1 AND s.deleted_at IS NULL LIMIT 1`,
+        [data.student_roll_number.trim()]
+      );
+      if (!stRows[0]) {
+        errors.push({ row: rowNum, message: `Student with roll number "${data.student_roll_number}" not found` });
+        continue;
+      }
+      const studentId = stRows[0].id;
+
+      // Find the latest unpaid invoice for this student
+      const { rows: invRows } = await pool.query(
+        `SELECT id, net_amount FROM fee_invoices
+         WHERE student_id = $1 AND status = 'unpaid'
+         ORDER BY due_date ASC LIMIT 1`,
+        [studentId]
+      );
+      if (!invRows[0]) {
+        errors.push({ row: rowNum, message: `No unpaid invoice found for roll number "${data.student_roll_number}"` });
+        continue;
+      }
+
+      await pool.query(
+        `INSERT INTO fee_payments
+           (invoice_id, amount_paid, payment_date, payment_method, reference_number, remarks)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [
+          invRows[0].id,
+          parseFloat(data.amount),
+          data.payment_date,
+          data.payment_method || 'cash',
+          data.reference_number || null,
+          data.remarks || null,
+        ]
+      );
+
+      // Update invoice status
+      const paid = parseFloat(data.amount);
+      const net  = parseFloat(invRows[0].net_amount);
+      const newStatus = paid >= net ? 'paid' : 'partial';
+      await pool.query(
+        `UPDATE fee_invoices SET status = $1, paid_amount = COALESCE(paid_amount,0) + $2 WHERE id = $3`,
+        [newStatus, paid, invRows[0].id]
+      );
+
+      imported++;
+    } catch (err) {
+      errors.push({ row: rowNum, message: err.message });
+    }
+  }
+
+  res.json({
+    success: true, imported, failed: errors.length, errors,
+    message: `Import complete. ${imported} payment(s) recorded, ${errors.length} failed.`,
+  });
+};
+
+// ── GET /api/fees/export?format=xlsx ────────────────────────────
+const exportFeesExcel = async (req, res, next) => {
+  try {
+    const { billing_month, class_id, status, format = 'csv' } = req.query;
+    if (format !== 'xlsx') return exportCSV(req, res, next); // delegate to existing CSV handler
+
+    const params = [];
+    let where = 'WHERE 1=1';
+    if (billing_month) { params.push(billing_month); where += ` AND fi.billing_month = $${params.length}`; }
+    if (class_id)      { params.push(class_id);      where += ` AND s.class_id = $${params.length}`; }
+    if (status)        { params.push(status);         where += ` AND fi.status = $${params.length}`; }
+
+    const { rows } = await pool.query(
+      `SELECT fi.invoice_number, s.full_name, s.roll_number, c.name AS class_name,
+              fi.invoice_type, fi.billing_month, fi.total_amount, fi.discount_amount,
+              fi.fine_amount, fi.net_amount, fi.paid_amount, fi.status, fi.due_date
+       FROM fee_invoices fi
+       JOIN students s ON s.id = fi.student_id
+       LEFT JOIN classes c ON c.id = s.class_id
+       ${where} ORDER BY fi.billing_month DESC, s.full_name
+       LIMIT 5000`,
+      params
+    );
+
+    const wb = await buildWorkbook({
+      title: 'Fee Collection Report', sheetName: 'Fees',
+      subtitle: `Total Invoices: ${rows.length} | Month: ${billing_month || 'All'} | Exported: ${new Date().toLocaleDateString('en-PK')}`,
+      columns: [
+        { key: 'invoice_number',  header: 'Invoice No',    width: 16 },
+        { key: 'full_name',       header: 'Student',       width: 22 },
+        { key: 'roll_number',     header: 'Roll No',       width: 10 },
+        { key: 'class_name',      header: 'Class',         width: 14 },
+        { key: 'billing_month',   header: 'Month',         width: 12 },
+        { key: 'total_amount',    header: 'Total',         width: 12, numFmt: '#,##0.00' },
+        { key: 'discount_amount', header: 'Discount',      width: 12, numFmt: '#,##0.00' },
+        { key: 'fine_amount',     header: 'Fine',          width: 10, numFmt: '#,##0.00' },
+        { key: 'net_amount',      header: 'Net',           width: 12, numFmt: '#,##0.00' },
+        { key: 'paid_amount',     header: 'Paid',          width: 12, numFmt: '#,##0.00' },
+        { key: 'status',          header: 'Status',        width: 10 },
+        { key: 'due_date',        header: 'Due Date',      width: 13 },
+      ],
+      rows,
+    });
+    return sendWorkbook(res, wb, `fees_${billing_month || 'all'}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   getFeeHeads, createFeeHead, updateFeeHead, deleteFeeHead,
   getFeeStructures, upsertFeeStructure, deleteFeeStructure,
@@ -1367,4 +1509,5 @@ module.exports = {
   getInvoicePrint, getReceiptPrint, getBulkPrintData, getByClassReport, getDailyReport,
   getConcessions, saveConcession, deleteConcession, applyLateFees,
   bulkRecordPayments, getChallanPrint,
+  getPaymentImportTemplate, importFeePayments, exportFeesExcel,
 };

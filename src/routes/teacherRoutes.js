@@ -1,27 +1,23 @@
 const express = require('express');
 const router  = express.Router();
 const {
-  getTeachers,
-  getTeacher,
-  getTeacherClasses,
-  getTeacherStudents,
-  createTeacher,
-  updateTeacher,
-  deleteTeacher,
-  getDeletedTeachers,
-  restoreTeacher,
-  assignTeacherToClass,
-  removeTeacherFromClass,
-  uploadPhoto,
-  listDocuments,
-  uploadDocument,
-  deleteDocument,
+  getTeachers, getTeacher, getTeacherClasses, getTeacherStudents,
+  createTeacher, updateTeacher, deleteTeacher,
+  getDeletedTeachers, restoreTeacher,
+  assignTeacherToClass, removeTeacherFromClass,
+  uploadPhoto, listDocuments, uploadDocument, deleteDocument,
+  getImportTemplate, importTeachers, exportTeachers,
 } = require('../controllers/teacherController');
-const { photoUpload, docUpload }  = require('../middleware/upload');
+const { photoUpload, docUpload, csvUpload } = require('../middleware/upload');
 const { requireRole }             = require('../middleware/authMiddleware');
 const { auditMiddleware }         = require('../middleware/auditLog');
 
 router.use(auditMiddleware('teacher'));
+
+// Import / Export
+router.get('/import/template', requireRole('admin'), getImportTemplate);
+router.post('/import',         requireRole('admin'), csvUpload.single('file'), importTeachers);
+router.get('/export',          requireRole('admin'), exportTeachers);
 
 router.get('/',         requireRole('admin', 'teacher'), getTeachers);
 router.post('/',        requireRole('admin'),            createTeacher);

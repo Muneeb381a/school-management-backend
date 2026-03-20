@@ -10,6 +10,7 @@ const {
   getMonthlySummary,
   getDailySummary,
   exportCSV,
+  exportAttendanceExcel,
   getStudentHistory,
   getAttendanceRegister,
 } = require('../controllers/attendanceController');
@@ -34,7 +35,7 @@ router.delete('/:id', requireRole('admin'), deleteAttendance);
 router.get('/register',      requireRole('admin', 'teacher'), getAttendanceRegister);
 router.get('/monthly',       requireRole('admin', 'teacher'), getMonthlySummary);
 router.get('/daily-summary', requireRole('admin', 'teacher'), getDailySummary);
-router.get('/export',        requireRole('admin'),            exportCSV);
+router.get('/export',        requireRole('admin'),            exportAttendanceExcel);
 
 // Per-student history
 router.get('/student/:id/history', requireRole('admin', 'teacher'), getStudentHistory);
