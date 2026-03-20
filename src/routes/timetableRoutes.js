@@ -3,7 +3,7 @@ const router  = express.Router();
 const {
   getPeriods, createPeriod, updatePeriod, deletePeriod,
   getTimetable, upsertEntry, deleteEntry,
-  getTeacherTimetable, getFullTimetable,
+  getTeacherTimetable, getFullTimetable, getConflicts,
 } = require('../controllers/timetableController');
 
 // Period management
@@ -18,6 +18,9 @@ router.route('/periods/:id')
 // Static paths BEFORE parameterized routes
 router.get('/all',         getFullTimetable);   // full school (all classes)
 router.get('/teacher/:id', getTeacherTimetable);
+
+// Conflict detection
+router.get('/conflicts', getConflicts);
 
 // Timetable entries
 router.get('/',               getTimetable);      // ?class_id=X

@@ -105,6 +105,29 @@ const upsertEntry = async (req, res) => {
     }
     const year = academic_year || '2024-25';
 
+    // ── Conflict check: teacher already assigned elsewhere at this period/day ──
+    if (teacher_id) {
+      const { rows: conflicts } = await pool.query(
+        `SELECT te.id, c.name AS class_name, c.section
+         FROM timetable_entries te
+         JOIN classes c ON c.id = te.class_id
+         WHERE te.teacher_id  = $1
+           AND te.period_id   = $2
+           AND te.day_of_week = $3
+           AND te.academic_year = $4
+           AND te.class_id   != $5`,
+        [teacher_id, period_id, day_of_week, year, class_id]
+      );
+      if (conflicts.length > 0) {
+        const clash = conflicts[0];
+        return res.status(409).json({
+          success: false,
+          message: `Teacher is already assigned to ${clash.class_name}${clash.section ? ' – ' + clash.section : ''} at this period`,
+          conflict: clash,
+        });
+      }
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO timetable_entries
          (class_id, period_id, day_of_week, teacher_id, subject, room, academic_year)
@@ -117,6 +140,33 @@ const upsertEntry = async (req, res) => {
       [class_id, period_id, day_of_week, teacher_id || null, subject || null, room || null, year]
     );
     res.status(201).json({ success: true, data: rows[0], message: 'Timetable slot saved' });
+  } catch (err) { serverErr(res, err); }
+};
+
+// GET /api/timetable/conflicts?class_id=X&academic_year=Y
+//  Returns entries in this class where the teacher is double-booked elsewhere
+const getConflicts = async (req, res) => {
+  try {
+    const { class_id, academic_year } = req.query;
+    if (!class_id) return res.json({ success: true, data: [] });
+    const year = academic_year || '2024-25';
+    const { rows } = await pool.query(
+      `SELECT te.id, te.period_id, te.day_of_week, te.teacher_id,
+              c2.name AS conflict_class, c2.section AS conflict_section
+       FROM timetable_entries te
+       JOIN timetable_entries te2
+         ON  te2.teacher_id   = te.teacher_id
+         AND te2.period_id    = te.period_id
+         AND te2.day_of_week  = te.day_of_week
+         AND te2.academic_year= te.academic_year
+         AND te2.class_id    != te.class_id
+       JOIN classes c2 ON c2.id = te2.class_id
+       WHERE te.class_id      = $1
+         AND te.academic_year = $2
+         AND te.teacher_id IS NOT NULL`,
+      [class_id, year]
+    );
+    res.json({ success: true, data: rows });
   } catch (err) { serverErr(res, err); }
 };
 
@@ -184,5 +234,5 @@ const getFullTimetable = async (req, res) => {
 module.exports = {
   getPeriods, createPeriod, updatePeriod, deletePeriod,
   getTimetable, upsertEntry, deleteEntry,
-  getTeacherTimetable, getFullTimetable,
+  getTeacherTimetable, getFullTimetable, getConflicts,
 };
