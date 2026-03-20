@@ -8,6 +8,8 @@ const {
   createTeacher,
   updateTeacher,
   deleteTeacher,
+  getDeletedTeachers,
+  restoreTeacher,
   assignTeacherToClass,
   removeTeacherFromClass,
   uploadPhoto,
@@ -15,20 +17,29 @@ const {
   uploadDocument,
   deleteDocument,
 } = require('../controllers/teacherController');
-const { photoUpload, docUpload } = require('../middleware/upload');
+const { photoUpload, docUpload }  = require('../middleware/upload');
+const { requireRole }             = require('../middleware/authMiddleware');
+const { auditMiddleware }         = require('../middleware/auditLog');
 
-router.route('/').get(getTeachers).post(createTeacher);
+router.use(auditMiddleware('teacher'));
 
-router.post('/:id/photo',              photoUpload.single('photo'), uploadPhoto);
-router.get('/:id/documents',           listDocuments);
-router.post('/:id/documents',          docUpload.single('file'),    uploadDocument);
-router.delete('/:id/documents/:docId', deleteDocument);
+router.get('/',         requireRole('admin', 'teacher'), getTeachers);
+router.post('/',        requireRole('admin'),            createTeacher);
+router.get('/deleted',  requireRole('admin'),            getDeletedTeachers);
+router.post('/:id/restore', requireRole('admin'),        restoreTeacher);
 
-router.get('/:id/classes',             getTeacherClasses);
-router.post('/:id/classes',            assignTeacherToClass);
-router.delete('/:id/classes/:classId', removeTeacherFromClass);
-router.get('/:id/students',            getTeacherStudents);
+router.post('/:id/photo',              requireRole('admin'), photoUpload.single('photo'), uploadPhoto);
+router.get('/:id/documents',           requireRole('admin', 'teacher'),                   listDocuments);
+router.post('/:id/documents',          requireRole('admin'), docUpload.single('file'),    uploadDocument);
+router.delete('/:id/documents/:docId', requireRole('admin'),                              deleteDocument);
 
-router.route('/:id').get(getTeacher).put(updateTeacher).delete(deleteTeacher);
+router.get('/:id/classes',             requireRole('admin', 'teacher'), getTeacherClasses);
+router.post('/:id/classes',            requireRole('admin'),            assignTeacherToClass);
+router.delete('/:id/classes/:classId', requireRole('admin'),            removeTeacherFromClass);
+router.get('/:id/students',            requireRole('admin', 'teacher'), getTeacherStudents);
+
+router.get('/:id',    requireRole('admin', 'teacher'), getTeacher);
+router.put('/:id',    requireRole('admin'),            updateTeacher);
+router.delete('/:id', requireRole('admin'),            deleteTeacher);
 
 module.exports = router;

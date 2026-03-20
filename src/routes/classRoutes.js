@@ -1,9 +1,20 @@
 const express = require('express');
-const router = express.Router();
-const { getClasses, getClass, getClassStudents, createClass, updateClass, deleteClass } = require('../controllers/classController');
+const router  = express.Router();
+const {
+  getClasses, getClass, getClassStudents, createClass, updateClass, deleteClass,
+} = require('../controllers/classController');
+const { requireRole }   = require('../middleware/authMiddleware');
+const { auditMiddleware } = require('../middleware/auditLog');
 
-router.route('/').get(getClasses).post(createClass);
-router.get('/:id/students', getClassStudents);
-router.route('/:id').get(getClass).put(updateClass).delete(deleteClass);
+router.use(auditMiddleware('class'));
+
+router.get('/',    requireRole('admin', 'teacher'), getClasses);
+router.post('/',   requireRole('admin'),            createClass);
+
+router.get('/:id/students', requireRole('admin', 'teacher'), getClassStudents);
+
+router.get('/:id',    requireRole('admin', 'teacher'), getClass);
+router.put('/:id',    requireRole('admin'),            updateClass);
+router.delete('/:id', requireRole('admin'),            deleteClass);
 
 module.exports = router;

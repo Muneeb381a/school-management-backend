@@ -11,47 +11,56 @@ const {
   getConcessions, saveConcession, deleteConcession, applyLateFees,
   getChallanPrint,
 } = require('../controllers/feeController');
+const { requireRole }     = require('../middleware/authMiddleware');
+const { auditMiddleware } = require('../middleware/auditLog');
 
-// Dashboard
-router.get('/dashboard-stats', getDashboardStats);
+router.use(auditMiddleware('fee'));
 
-// Fee Heads
-router.route('/heads').get(getFeeHeads).post(createFeeHead);
-router.route('/heads/:id').put(updateFeeHead).delete(deleteFeeHead);
+// Dashboard — admin + teacher can see fee stats
+router.get('/dashboard-stats', requireRole('admin', 'teacher'), getDashboardStats);
+
+// Fee Heads — admin only for mutations
+router.get('/heads',       requireRole('admin', 'teacher'), getFeeHeads);
+router.post('/heads',      requireRole('admin'),            createFeeHead);
+router.put('/heads/:id',   requireRole('admin'),            updateFeeHead);
+router.delete('/heads/:id',requireRole('admin'),            deleteFeeHead);
 
 // Fee Structures
-router.route('/structures').get(getFeeStructures).post(upsertFeeStructure);
-router.delete('/structures/:id', deleteFeeStructure);
+router.get('/structures',     requireRole('admin', 'teacher'), getFeeStructures);
+router.post('/structures',    requireRole('admin'),            upsertFeeStructure);
+router.delete('/structures/:id', requireRole('admin'),         deleteFeeStructure);
 
 // Concessions
-router.route('/concessions').get(getConcessions).post(saveConcession);
-router.delete('/concessions/:id', deleteConcession);
+router.get('/concessions',    requireRole('admin', 'teacher'), getConcessions);
+router.post('/concessions',   requireRole('admin'),            saveConcession);
+router.delete('/concessions/:id', requireRole('admin'),        deleteConcession);
 
-// Invoices — static sub-paths BEFORE /:id
-router.get('/bulk-print',                              getBulkPrintData);
-router.post('/invoices/generate-monthly',              generateMonthlyFees);
-router.post('/invoices/generate-admission/:studentId', generateAdmissionInvoice);
-router.post('/invoices/apply-late-fees',               applyLateFees);
-router.get('/invoices/:id/print',                      getInvoicePrint);
-router.get('/invoices/:id/challan',                    getChallanPrint);
-router.get('/invoices',                                getInvoices);
-router.post('/invoices',                               createInvoice);
-router.get('/invoices/:id',                            getInvoice);
-router.put('/invoices/:id',                            updateInvoice);
-router.delete('/invoices/:id',                         cancelInvoice);
+// Invoices
+router.get('/bulk-print',                              requireRole('admin'), getBulkPrintData);
+router.post('/invoices/generate-monthly',              requireRole('admin'), generateMonthlyFees);
+router.post('/invoices/generate-admission/:studentId', requireRole('admin'), generateAdmissionInvoice);
+router.post('/invoices/apply-late-fees',               requireRole('admin'), applyLateFees);
+router.get('/invoices/:id/print',                      requireRole('admin', 'teacher'), getInvoicePrint);
+router.get('/invoices/:id/challan',                    requireRole('admin', 'teacher'), getChallanPrint);
+router.get('/invoices',                                requireRole('admin', 'teacher'), getInvoices);
+router.post('/invoices',                               requireRole('admin'),            createInvoice);
+router.get('/invoices/:id',                            requireRole('admin', 'teacher'), getInvoice);
+router.put('/invoices/:id',                            requireRole('admin'),            updateInvoice);
+router.delete('/invoices/:id',                         requireRole('admin'),            cancelInvoice);
 
 // Payments
-router.post('/payments/bulk', bulkRecordPayments);
-router.get('/payments/:id/receipt', getReceiptPrint);
-router.route('/payments').get(getPayments).post(recordPayment);
-router.delete('/payments/:id', voidPayment);
+router.post('/payments/bulk',          requireRole('admin'),            bulkRecordPayments);
+router.get('/payments/:id/receipt',    requireRole('admin', 'teacher'), getReceiptPrint);
+router.get('/payments',                requireRole('admin', 'teacher'), getPayments);
+router.post('/payments',               requireRole('admin'),            recordPayment);
+router.delete('/payments/:id',         requireRole('admin'),            voidPayment);
 
 // Reports
-router.get('/reports/monthly-summary', getMonthlySummary);
-router.get('/reports/outstanding',     getOutstandingBalances);
-router.get('/reports/by-class',        getByClassReport);
-router.get('/reports/daily',           getDailyReport);
-router.get('/reports/student/:id',     getStudentFeeHistory);
-router.get('/export',                  exportCSV);
+router.get('/reports/monthly-summary', requireRole('admin', 'teacher'), getMonthlySummary);
+router.get('/reports/outstanding',     requireRole('admin', 'teacher'), getOutstandingBalances);
+router.get('/reports/by-class',        requireRole('admin', 'teacher'), getByClassReport);
+router.get('/reports/daily',           requireRole('admin', 'teacher'), getDailyReport);
+router.get('/reports/student/:id',     requireRole('admin', 'teacher'), getStudentFeeHistory);
+router.get('/export',                  requireRole('admin'),            exportCSV);
 
 module.exports = router;

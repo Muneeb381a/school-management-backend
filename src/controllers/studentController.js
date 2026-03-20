@@ -1,5 +1,7 @@
-const bcrypt = require('bcryptjs');
-const pool   = require('../db');
+const bcrypt   = require('bcryptjs');
+const pool     = require('../db');
+const AppError = require('../utils/AppError');
+const { parsePagination, paginationMeta } = require('../utils/pagination');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
 
 const ALL_FIELDS = [
@@ -37,59 +39,71 @@ function buildUsername(fullName, id) {
   return `stu_${clean}${id}`;
 }
 
-const getAllStudents = async (req, res) => {
+const getAllStudents = async (req, res, next) => {
   try {
     const { search, grade, status, class_id } = req.query;
-    let query = `
-      SELECT s.id, s.full_name, s.full_name_urdu, s.email, s.phone, s.grade, s.section,
-             s.roll_number, s.gender, s.b_form_no, s.blood_group, s.city, s.province,
-             s.status, s.admission_date, s.created_at, s.class_id, s.photo_url,
-             c.name AS class_name, c.section AS class_section
-      FROM students s
-      LEFT JOIN classes c ON c.id = s.class_id
-      WHERE 1=1
-    `;
+    const { page, limit, offset }             = parsePagination(req.query);
+
+    let where  = 'WHERE s.deleted_at IS NULL';
     const params = [];
+
     if (search) {
       params.push(`%${search}%`);
-      query += ` AND (s.full_name ILIKE $${params.length} OR s.email ILIKE $${params.length} OR s.b_form_no ILIKE $${params.length})`;
+      const p = params.length;
+      where += ` AND (s.full_name ILIKE $${p} OR s.email ILIKE $${p} OR s.b_form_no ILIKE $${p})`;
     }
-    if (grade)    { params.push(grade);    query += ` AND s.grade = $${params.length}`; }
-    if (status)   { params.push(status);   query += ` AND s.status = $${params.length}`; }
-    if (class_id) { params.push(class_id); query += ` AND s.class_id = $${params.length}`; }
-    query += ' ORDER BY s.created_at DESC';
-    const { rows } = await pool.query(query, params);
-    res.json({ success: true, data: rows, total: rows.length });
+    if (grade)    { params.push(grade);    where += ` AND s.grade = $${params.length}`; }
+    if (status)   { params.push(status);   where += ` AND s.status = $${params.length}`; }
+    if (class_id) { params.push(class_id); where += ` AND s.class_id = $${params.length}`; }
+
+    const selectCols = `
+      s.id, s.full_name, s.full_name_urdu, s.email, s.phone, s.grade, s.section,
+      s.roll_number, s.gender, s.b_form_no, s.blood_group, s.city, s.province,
+      s.status, s.admission_date, s.created_at, s.class_id, s.photo_url,
+      c.name AS class_name, c.section AS class_section`;
+
+    const [countRes, dataRes] = await Promise.all([
+      pool.query(`SELECT COUNT(*) AS total FROM students s ${where}`, params),
+      pool.query(
+        `SELECT ${selectCols}
+         FROM students s LEFT JOIN classes c ON c.id = s.class_id
+         ${where}
+         ORDER BY s.created_at DESC
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset]
+      ),
+    ]);
+
+    const total = parseInt(countRes.rows[0].total, 10);
+    res.json({ success: true, data: dataRes.rows, meta: paginationMeta(total, page, limit) });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    next(err);
   }
 };
 
-const getStudentById = async (req, res) => {
+const getStudentById = async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      `SELECT s.*, c.name AS class_name FROM students s LEFT JOIN classes c ON c.id = s.class_id WHERE s.id = $1`,
+      `SELECT s.*, c.name AS class_name FROM students s LEFT JOIN classes c ON c.id = s.class_id WHERE s.id = $1 AND s.deleted_at IS NULL`,
       [req.params.id]
     );
-    if (!rows[0]) return res.status(404).json({ success: false, message: 'Student not found' });
+    if (!rows[0]) throw new AppError('Student not found.', 404);
     res.json({ success: true, data: rows[0] });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    next(err);
   }
 };
 
-const createStudent = async (req, res) => {
+const createStudent = async (req, res, next) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const fields = pickFields(req.body);
-    if (!fields.full_name) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ success: false, message: 'Full name is required' });
-    }
+
     const keys         = Object.keys(fields);
     const values       = Object.values(fields);
     const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
+
     const { rows } = await client.query(
       `INSERT INTO students (${keys.join(', ')}) VALUES (${placeholders}) RETURNING *`,
       values
@@ -106,22 +120,20 @@ const createStudent = async (req, res) => {
     );
     await client.query('COMMIT');
     res.status(201).json({
-      success: true,
-      data: student,
+      success:     true,
+      data:        student,
       credentials: { username, password: rawPw },
-      message: 'Student enrolled successfully',
+      message:     'Student enrolled successfully.',
     });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('[CREATE STUDENT]', err.message);
-    if (err.code === '23505') return res.status(409).json({ success: false, message: 'Email already registered' });
-    res.status(500).json({ success: false, message: err.message });
+    next(err);
   } finally {
     client.release();
   }
 };
 
-const updateStudent = async (req, res) => {
+const updateStudent = async (req, res, next) => {
   try {
     const fields    = pickFields(req.body);
     const keys      = Object.keys(fields);
@@ -131,34 +143,63 @@ const updateStudent = async (req, res) => {
       `UPDATE students SET ${setClause} WHERE id = $${keys.length + 1} RETURNING *`,
       [...values, req.params.id]
     );
-    if (!rows[0]) return res.status(404).json({ success: false, message: 'Student not found' });
-    res.json({ success: true, data: rows[0], message: 'Student updated successfully' });
+    if (!rows[0]) throw new AppError('Student not found.', 404);
+    res.json({ success: true, data: rows[0], message: 'Student updated successfully.' });
   } catch (err) {
-    console.error('[UPDATE STUDENT]', err.message);
-    if (err.code === '23505') return res.status(409).json({ success: false, message: 'Email already registered' });
-    res.status(500).json({ success: false, message: err.message });
+    next(err);
   }
 };
 
-const deleteStudent = async (req, res) => {
+const deleteStudent = async (req, res, next) => {
   try {
-    const { rows } = await pool.query('DELETE FROM students WHERE id=$1 RETURNING id', [req.params.id]);
-    if (!rows[0]) return res.status(404).json({ success: false, message: 'Student not found' });
-    res.json({ success: true, message: 'Student deleted successfully' });
+    const { rows } = await pool.query(
+      `UPDATE students SET deleted_at = NOW() WHERE id=$1 AND deleted_at IS NULL RETURNING id`,
+      [req.params.id]
+    );
+    if (!rows[0]) throw new AppError('Student not found.', 404);
+    res.json({ success: true, message: 'Student deleted successfully.' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    next(err);
   }
 };
 
-const promoteStudents = async (req, res) => {
+const getDeletedStudents = async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT s.id, s.full_name, s.email, s.grade, s.roll_number, s.deleted_at,
+              c.name AS class_name
+       FROM students s LEFT JOIN classes c ON c.id = s.class_id
+       WHERE s.deleted_at IS NOT NULL
+       ORDER BY s.deleted_at DESC`
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const restoreStudent = async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE students SET deleted_at = NULL WHERE id=$1 AND deleted_at IS NOT NULL RETURNING id, full_name`,
+      [req.params.id]
+    );
+    if (!rows[0]) throw new AppError('Student not found in deleted records.', 404);
+    res.json({ success: true, data: rows[0], message: 'Student restored successfully.' });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const promoteStudents = async (req, res, next) => {
   const { from_class_id, to_class_id, student_ids } = req.body;
   if (!from_class_id || !to_class_id)
-    return res.status(400).json({ success: false, message: 'from_class_id and to_class_id are required' });
+    return next(new AppError('from_class_id and to_class_id are required.', 400));
   if (String(from_class_id) === String(to_class_id))
-    return res.status(400).json({ success: false, message: 'Source and destination class must be different' });
+    return next(new AppError('Source and destination class must be different.', 400));
   try {
     const { rows: clsRows } = await pool.query('SELECT grade, section FROM classes WHERE id = $1', [to_class_id]);
-    if (!clsRows[0]) return res.status(404).json({ success: false, message: 'Destination class not found' });
+    if (!clsRows[0]) throw new AppError('Destination class not found.', 404);
     const { grade, section } = clsRows[0];
     let query, params;
     if (Array.isArray(student_ids) && student_ids.length > 0) {
@@ -169,31 +210,30 @@ const promoteStudents = async (req, res) => {
       params = [to_class_id, grade, section, from_class_id];
     }
     const { rows } = await pool.query(query, params);
-    res.json({ success: true, promoted: rows.length, message: `${rows.length} student(s) promoted successfully` });
+    res.json({ success: true, promoted: rows.length, message: `${rows.length} student(s) promoted successfully.` });
   } catch (err) {
-    console.error('[PROMOTE STUDENTS]', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    next(err);
   }
 };
 
-const uploadPhoto = async (req, res) => {
+const uploadPhoto = async (req, res, next) => {
   try {
-    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+    if (!req.file) throw new AppError('No file uploaded.', 400);
     const { rows: old } = await pool.query('SELECT photo_url FROM students WHERE id=$1', [req.params.id]);
+    if (!old[0]) throw new AppError('Student not found.', 404);
     if (old[0]?.photo_url) await deleteFromCloudinary(old[0].photo_url);
     const result = await uploadToCloudinary(req.file.buffer, 'students/photos');
     const { rows } = await pool.query(
       'UPDATE students SET photo_url=$1 WHERE id=$2 RETURNING id, photo_url',
       [result.secure_url, req.params.id]
     );
-    if (!rows[0]) return res.status(404).json({ success: false, message: 'Student not found' });
     res.json({ success: true, data: rows[0] });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    next(err);
   }
 };
 
-const listDocuments = async (req, res) => {
+const listDocuments = async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       'SELECT * FROM student_documents WHERE student_id=$1 ORDER BY created_at DESC',
@@ -201,13 +241,13 @@ const listDocuments = async (req, res) => {
     );
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    next(err);
   }
 };
 
-const uploadDocument = async (req, res) => {
+const uploadDocument = async (req, res, next) => {
   try {
-    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+    if (!req.file) throw new AppError('No file uploaded.', 400);
     const { name = req.file.originalname, doc_type = 'other' } = req.body;
     const result = await uploadToCloudinary(req.file.buffer, 'students/docs');
     const { rows } = await pool.query(
@@ -216,28 +256,28 @@ const uploadDocument = async (req, res) => {
     );
     res.status(201).json({ success: true, data: rows[0] });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    next(err);
   }
 };
 
-const deleteDocument = async (req, res) => {
+const deleteDocument = async (req, res, next) => {
   try {
     const { rows } = await pool.query(
       'DELETE FROM student_documents WHERE id=$1 AND student_id=$2 RETURNING *',
       [req.params.docId, req.params.id]
     );
-    if (!rows[0]) return res.status(404).json({ success: false, message: 'Document not found' });
+    if (!rows[0]) throw new AppError('Document not found.', 404);
     await deleteFromCloudinary(rows[0].file_url);
-    res.json({ success: true, message: 'Document deleted' });
+    res.json({ success: true, message: 'Document deleted.' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    next(err);
   }
 };
 
-const resetCredentials = async (req, res) => {
+const resetCredentials = async (req, res, next) => {
   try {
     const { rows } = await pool.query('SELECT id, full_name FROM students WHERE id=$1', [req.params.id]);
-    if (!rows[0]) return res.status(404).json({ success: false, message: 'Student not found' });
+    if (!rows[0]) throw new AppError('Student not found.', 404);
     const student  = rows[0];
     const username = buildUsername(student.full_name, student.id);
     const rawPw    = `Stu@${student.id}`;
@@ -250,11 +290,13 @@ const resetCredentials = async (req, res) => {
     );
     res.json({ success: true, credentials: { username, password: rawPw } });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    next(err);
   }
 };
 
 module.exports = {
-  getAllStudents, getStudentById, createStudent, updateStudent, deleteStudent, promoteStudents,
+  getAllStudents, getStudentById, createStudent, updateStudent, deleteStudent,
+  getDeletedStudents, restoreStudent,
+  promoteStudents,
   uploadPhoto, listDocuments, uploadDocument, deleteDocument, resetCredentials,
 };

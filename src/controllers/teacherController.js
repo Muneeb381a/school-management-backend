@@ -24,7 +24,7 @@ const getTeachers = async (req, res) => {
       LEFT JOIN teacher_classes tc ON tc.teacher_id = t.id
       LEFT JOIN classes          c  ON c.id = tc.class_id
       LEFT JOIN students         s  ON s.class_id = c.id
-      WHERE 1=1
+      WHERE t.deleted_at IS NULL
     `;
     const params = [];
 
@@ -60,7 +60,7 @@ const getTeacher = async (req, res) => {
        LEFT JOIN teacher_classes tc ON tc.teacher_id = t.id
        LEFT JOIN classes          c  ON c.id = tc.class_id
        LEFT JOIN students         s  ON s.class_id = c.id
-       WHERE t.id = $1
+       WHERE t.id = $1 AND t.deleted_at IS NULL
        GROUP BY t.id`,
       [req.params.id]
     );
@@ -227,11 +227,32 @@ const deleteTeacher = async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      'DELETE FROM teachers WHERE id=$1 RETURNING id',
+      `UPDATE teachers SET deleted_at = NOW() WHERE id=$1 AND deleted_at IS NULL RETURNING id`,
       [req.params.id]
     );
     if (!rows[0]) return notFound(res);
     res.json({ success: true, message: 'Teacher deleted successfully' });
+  } catch (err) { serverErr(res, err); }
+};
+
+const getDeletedTeachers = async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, full_name, email, subject, phone, deleted_at
+       FROM teachers WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) { serverErr(res, err); }
+};
+
+const restoreTeacher = async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE teachers SET deleted_at = NULL WHERE id=$1 AND deleted_at IS NOT NULL RETURNING id, full_name`,
+      [req.params.id]
+    );
+    if (!rows[0]) return notFound(res);
+    res.json({ success: true, data: rows[0], message: 'Teacher restored successfully' });
   } catch (err) { serverErr(res, err); }
 };
 
@@ -340,6 +361,8 @@ module.exports = {
   createTeacher,
   updateTeacher,
   deleteTeacher,
+  getDeletedTeachers,
+  restoreTeacher,
   assignTeacherToClass,
   removeTeacherFromClass,
   uploadPhoto,

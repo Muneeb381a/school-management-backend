@@ -1,5 +1,5 @@
 const express = require('express');
-const router = express.Router();
+const router  = express.Router();
 const {
   getExams,
   getExamById,
@@ -20,49 +20,37 @@ const {
   getClassReportCards,
   getStudentPerformance,
 } = require('../controllers/examController');
+const { requireRole }     = require('../middleware/authMiddleware');
+const { auditMiddleware } = require('../middleware/auditLog');
 
-// ── Student Performance (must be before /:id to avoid conflict) ──
-router.get('/student/:studentId/performance', getStudentPerformance);
+router.use(auditMiddleware('exam'));
 
-// ── Exams CRUD ───────────────────────────────────────────────
-// GET    /api/exams                        → list exams (filter: ?academic_year=&status=)
-// GET    /api/exams/:id                    → single exam
-// POST   /api/exams                        → create exam
-// PUT    /api/exams/:id                    → update exam
-// PATCH  /api/exams/:id/status             → update status only
-// DELETE /api/exams/:id                    → delete exam
-router.get('/',                   getExams);
-router.get('/:id',                getExamById);
-router.post('/',                  createExam);
-router.put('/:id',                updateExam);
-router.patch('/:id/status',       updateExamStatus);
-router.delete('/:id',             deleteExam);
+// ── Student Performance ───────────────────────────────────────
+router.get('/student/:studentId/performance', requireRole('admin', 'teacher'), getStudentPerformance);
 
-// ── Exam Subjects (marks config per class × subject) ────────
-// GET    /api/exams/:examId/subjects       → list configured subjects (filter: ?class_id=)
-// POST   /api/exams/:examId/subjects       → add subject(s) to exam
-// DELETE /api/exams/subjects/:id           → remove a subject from exam
-router.get('/:examId/subjects',   getExamSubjects);
-router.post('/:examId/subjects',  addExamSubject);
-router.delete('/subjects/:id',    removeExamSubject);
+// ── Exams CRUD ────────────────────────────────────────────────
+router.get('/',              requireRole('admin', 'teacher'), getExams);
+router.post('/',             requireRole('admin'),            createExam);
+router.get('/:id',           requireRole('admin', 'teacher'), getExamById);
+router.put('/:id',           requireRole('admin'),            updateExam);
+router.patch('/:id/status',  requireRole('admin'),            updateExamStatus);
+router.delete('/:id',        requireRole('admin'),            deleteExam);
 
-// ── Student Marks ────────────────────────────────────────────
-// GET    /api/exams/:examId/marks          → get marks (filter: ?class_id=&student_id=)
-// POST   /api/exams/:examId/marks          → submit / update marks (bulk array)
-// DELETE /api/exams/marks/:id             → delete a single mark
-router.get('/:examId/marks',      getMarks);
-router.post('/:examId/marks',     submitMarks);
-router.delete('/marks/:id',       deleteMark);
+// ── Exam Subjects ─────────────────────────────────────────────
+router.get('/:examId/subjects',  requireRole('admin', 'teacher'), getExamSubjects);
+router.post('/:examId/subjects', requireRole('admin'),            addExamSubject);
+router.delete('/subjects/:id',   requireRole('admin'),            removeExamSubject);
 
-// ── Results ──────────────────────────────────────────────────
-// POST   /api/exams/:examId/calculate-results               → compute & store results
-// GET    /api/exams/:examId/results                         → all results (filter: ?class_id=)
-// GET    /api/exams/:examId/results/student/:studentId      → student report card
-// GET    /api/exams/:examId/results/class/:classId/ranking  → class ranking
-router.post('/:examId/calculate-results',                      calculateResults);
-router.get('/:examId/results',                                 getResults);
-router.get('/:examId/results/student/:studentId',              getStudentReportCard);
-router.get('/:examId/results/class/:classId/ranking',          getClassRanking);
-router.get('/:examId/results/class/:classId/report-cards',     getClassReportCards);
+// ── Student Marks ─────────────────────────────────────────────
+router.get('/:examId/marks',    requireRole('admin', 'teacher'), getMarks);
+router.post('/:examId/marks',   requireRole('admin', 'teacher'), submitMarks);   // teachers enter marks
+router.delete('/marks/:id',     requireRole('admin'),            deleteMark);
+
+// ── Results ───────────────────────────────────────────────────
+router.post('/:examId/calculate-results',                  requireRole('admin'),            calculateResults);
+router.get('/:examId/results',                             requireRole('admin', 'teacher'), getResults);
+router.get('/:examId/results/student/:studentId',          requireRole('admin', 'teacher'), getStudentReportCard);
+router.get('/:examId/results/class/:classId/ranking',      requireRole('admin', 'teacher'), getClassRanking);
+router.get('/:examId/results/class/:classId/report-cards', requireRole('admin', 'teacher'), getClassReportCards);
 
 module.exports = router;

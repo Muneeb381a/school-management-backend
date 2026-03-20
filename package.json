@@ -12,14 +12,18 @@
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.9.0",
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-rate-limit": "^8.3.1",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
+    "morgan": "^1.10.1",
     "multer": "^2.1.1",
-    "pg": "^8.11.5"
+    "nodemailer": "^8.0.3",
+    "pg": "^8.11.5",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"

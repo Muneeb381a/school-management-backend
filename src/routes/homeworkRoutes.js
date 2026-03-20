@@ -1,15 +1,18 @@
 const express = require('express');
 const router  = express.Router();
-const { getHomework, getHomeworkById, createHomework, updateHomework, deleteHomework } =
-  require('../controllers/homeworkController');
+const {
+  getHomework, getHomeworkById, createHomework, updateHomework, deleteHomework,
+} = require('../controllers/homeworkController');
+const { requireRole }     = require('../middleware/authMiddleware');
+const { auditMiddleware } = require('../middleware/auditLog');
 
-// GET    /api/homework          → list (filter: ?class_id=&subject_id=&status=&due_from=&due_to=)
-// POST   /api/homework          → create
-// GET    /api/homework/:id      → single
-// PUT    /api/homework/:id      → update
-// DELETE /api/homework/:id      → delete
+router.use(auditMiddleware('homework'));
 
-router.route('/').get(getHomework).post(createHomework);
-router.route('/:id').get(getHomeworkById).put(updateHomework).delete(deleteHomework);
+// Teachers create/manage homework; admin has full access
+router.get('/',    requireRole('admin', 'teacher'), getHomework);
+router.post('/',   requireRole('admin', 'teacher'), createHomework);
+router.get('/:id', requireRole('admin', 'teacher'), getHomeworkById);
+router.put('/:id', requireRole('admin', 'teacher'), updateHomework);
+router.delete('/:id', requireRole('admin'),         deleteHomework);
 
 module.exports = router;

@@ -1,47 +1,33 @@
 const express = require('express');
-const router = express.Router();
+const router  = express.Router();
 const {
-  getSubjects,
-  createSubject,
-  updateSubject,
-  deleteSubject,
-  getClassSubjects,
-  assignSubjectToClass,
-  removeSubjectFromClass,
-  assignTeacherToSubject,
-  removeTeacherAssignment,
-  getClassSchedule,
-  getAllSchedules,
+  getSubjects, createSubject, updateSubject, deleteSubject,
+  getClassSubjects, assignSubjectToClass, removeSubjectFromClass,
+  assignTeacherToSubject, removeTeacherAssignment,
+  getClassSchedule, getAllSchedules,
 } = require('../controllers/subjectController');
+const { requireRole }     = require('../middleware/authMiddleware');
+const { auditMiddleware } = require('../middleware/auditLog');
 
-// ── Subjects CRUD ───────────────────────────────────────────
-// GET    /api/subjects              → list all subjects
-// POST   /api/subjects              → create subject
-// PUT    /api/subjects/:id          → update subject
-// DELETE /api/subjects/:id          → delete subject
-router.get('/',         getSubjects);
-router.post('/',        createSubject);
-router.put('/:id',      updateSubject);
-router.delete('/:id',   deleteSubject);
+router.use(auditMiddleware('subject'));
 
-// ── Class-Subject assignments ───────────────────────────────
-// GET    /api/subjects/class/:classId          → subjects of a class (+ assigned teachers)
-// POST   /api/subjects/class/:classId          → assign subject to class
-// DELETE /api/subjects/class-subject/:id       → remove subject from class
-router.get('/class/:classId',         getClassSubjects);
-router.post('/class/:classId',        assignSubjectToClass);
-router.delete('/class-subject/:id',   removeSubjectFromClass);
+// Subjects CRUD
+router.get('/',         requireRole('admin', 'teacher'), getSubjects);
+router.post('/',        requireRole('admin'),            createSubject);
+router.put('/:id',      requireRole('admin'),            updateSubject);
+router.delete('/:id',   requireRole('admin'),            deleteSubject);
 
-// ── Teacher-Subject assignments ─────────────────────────────
-// POST   /api/subjects/assign-teacher          → assign / reassign teacher to subject for a class
-// DELETE /api/subjects/teacher-assignment/:id  → remove teacher assignment
-router.post('/assign-teacher',              assignTeacherToSubject);
-router.delete('/teacher-assignment/:id',    removeTeacherAssignment);
+// Class-Subject assignments
+router.get('/class/:classId',       requireRole('admin', 'teacher'), getClassSubjects);
+router.post('/class/:classId',      requireRole('admin'),            assignSubjectToClass);
+router.delete('/class-subject/:id', requireRole('admin'),            removeSubjectFromClass);
 
-// ── Full schedule views ─────────────────────────────────────
-// GET /api/subjects/schedule/:classId          → full schedule for one class
-// GET /api/subjects/all-schedules              → school-wide schedule
-router.get('/all-schedules',          getAllSchedules);
-router.get('/schedule/:classId',      getClassSchedule);
+// Teacher-Subject assignments
+router.post('/assign-teacher',           requireRole('admin'), assignTeacherToSubject);
+router.delete('/teacher-assignment/:id', requireRole('admin'), removeTeacherAssignment);
+
+// Schedule views
+router.get('/all-schedules',      requireRole('admin', 'teacher'), getAllSchedules);
+router.get('/schedule/:classId',  requireRole('admin', 'teacher'), getClassSchedule);
 
 module.exports = router;

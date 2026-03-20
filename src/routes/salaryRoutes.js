@@ -5,26 +5,23 @@ const {
   getSalaryPayments, generateMonthlySalaries, updateSalaryPayment, markSalaryPaid, getSalarySlip,
   bulkMarkSalaryPaid,
 } = require('../controllers/salaryController');
+const { requireRole }     = require('../middleware/authMiddleware');
+const { auditMiddleware } = require('../middleware/auditLog');
 
-// ── Salary Structures ──────────────────────────────────────────
-// GET  /api/salary/structures                   → all structures
-// GET  /api/salary/structures/:teacherId        → single teacher
-// POST /api/salary/structures                   → create/update (upsert)
-router.get('/structures',              getSalaryStructures);
-router.get('/structures/:teacherId',   getTeacherSalaryStructure);
-router.post('/structures',             upsertSalaryStructure);
+router.use(auditMiddleware('salary'));
 
-// ── Salary Payments ────────────────────────────────────────────
-// GET  /api/salary/payments?month=&status=&teacher_id=  → list payments
-// POST /api/salary/payments/generate              → generate for a month
-// GET  /api/salary/payments/:id                   → single slip
-// PUT  /api/salary/payments/:id                   → update (deductions etc.)
-// POST /api/salary/payments/:id/mark-paid         → quick mark paid
-router.get('/payments',                  getSalaryPayments);
-router.post('/payments/generate',        generateMonthlySalaries);
-router.post('/payments/bulk-mark-paid',  bulkMarkSalaryPaid);
-router.get('/payments/:id',              getSalarySlip);
-router.put('/payments/:id',              updateSalaryPayment);
-router.post('/payments/:id/mark-paid',   markSalaryPaid);
+// ── Salary Structures — admin only (financial configuration) ──
+router.get('/structures',            requireRole('admin'),            getSalaryStructures);
+router.get('/structures/:teacherId', requireRole('admin'),            getTeacherSalaryStructure);
+router.post('/structures',           requireRole('admin'),            upsertSalaryStructure);
+
+// ── Salary Payments ───────────────────────────────────────────
+// Teachers can view their own salary slip; admin can view/manage all
+router.get('/payments',                  requireRole('admin'),            getSalaryPayments);
+router.post('/payments/generate',        requireRole('admin'),            generateMonthlySalaries);
+router.post('/payments/bulk-mark-paid',  requireRole('admin'),            bulkMarkSalaryPaid);
+router.get('/payments/:id',              requireRole('admin', 'teacher'), getSalarySlip);   // own slip
+router.put('/payments/:id',              requireRole('admin'),            updateSalaryPayment);
+router.post('/payments/:id/mark-paid',   requireRole('admin'),            markSalaryPaid);
 
 module.exports = router;

@@ -5,26 +5,27 @@ const {
   getTimetable, upsertEntry, deleteEntry,
   getTeacherTimetable, getFullTimetable, getConflicts,
 } = require('../controllers/timetableController');
+const { requireRole }     = require('../middleware/authMiddleware');
+const { auditMiddleware } = require('../middleware/auditLog');
 
-// Period management
-router.route('/periods')
-  .get(getPeriods)
-  .post(createPeriod);
+router.use(auditMiddleware('timetable'));
 
-router.route('/periods/:id')
-  .put(updatePeriod)
-  .delete(deletePeriod);
+// Period management — admin configures bell schedule
+router.get('/periods',      requireRole('admin', 'teacher'), getPeriods);
+router.post('/periods',     requireRole('admin'),            createPeriod);
+router.put('/periods/:id',  requireRole('admin'),            updatePeriod);
+router.delete('/periods/:id', requireRole('admin'),          deletePeriod);
 
 // Static paths BEFORE parameterized routes
-router.get('/all',         getFullTimetable);   // full school (all classes)
-router.get('/teacher/:id', getTeacherTimetable);
+router.get('/all',         requireRole('admin', 'teacher'), getFullTimetable);
+router.get('/teacher/:id', requireRole('admin', 'teacher'), getTeacherTimetable);
 
 // Conflict detection
-router.get('/conflicts', getConflicts);
+router.get('/conflicts', requireRole('admin', 'teacher'), getConflicts);
 
 // Timetable entries
-router.get('/',               getTimetable);      // ?class_id=X
-router.post('/entries',       upsertEntry);
-router.delete('/entries/:id', deleteEntry);
+router.get('/',               requireRole('admin', 'teacher'), getTimetable);
+router.post('/entries',       requireRole('admin'),            upsertEntry);
+router.delete('/entries/:id', requireRole('admin'),            deleteEntry);
 
 module.exports = router;

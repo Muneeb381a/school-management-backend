@@ -1,15 +1,17 @@
 const express = require('express');
 const router  = express.Router();
-const { getEvents, getEventById, createEvent, updateEvent, deleteEvent } =
-  require('../controllers/eventsController');
+const {
+  getEvents, getEventById, createEvent, updateEvent, deleteEvent,
+} = require('../controllers/eventsController');
+const { requireRole }     = require('../middleware/authMiddleware');
+const { auditMiddleware } = require('../middleware/auditLog');
 
-// GET    /api/events            → list (filter: ?academic_year=&type=&month=YYYY-MM&is_holiday=)
-// POST   /api/events            → create
-// GET    /api/events/:id        → single
-// PUT    /api/events/:id        → update
-// DELETE /api/events/:id        → delete
+router.use(auditMiddleware('event'));
 
-router.route('/').get(getEvents).post(createEvent);
-router.route('/:id').get(getEventById).put(updateEvent).delete(deleteEvent);
+router.get('/',    requireRole('admin', 'teacher'), getEvents);
+router.post('/',   requireRole('admin'),            createEvent);
+router.get('/:id', requireRole('admin', 'teacher'), getEventById);
+router.put('/:id', requireRole('admin'),            updateEvent);
+router.delete('/:id', requireRole('admin'),         deleteEvent);
 
 module.exports = router;

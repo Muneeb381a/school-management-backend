@@ -3,12 +3,16 @@ const router  = express.Router();
 const {
   getItems, getItem, createItem, updateItem, deleteItem, getSummary,
 } = require('../controllers/inventoryController');
+const { requireRole }     = require('../middleware/authMiddleware');
+const { auditMiddleware } = require('../middleware/auditLog');
 
-router.get('/summary', getSummary);
-router.get('/',        getItems);
-router.get('/:id',     getItem);
-router.post('/',       createItem);
-router.put('/:id',     updateItem);
-router.delete('/:id',  deleteItem);
+router.use(auditMiddleware('inventory'));
+
+router.get('/summary', requireRole('admin', 'teacher'), getSummary);
+router.get('/',        requireRole('admin', 'teacher'), getItems);
+router.get('/:id',     requireRole('admin', 'teacher'), getItem);
+router.post('/',       requireRole('admin'),            createItem);
+router.put('/:id',     requireRole('admin'),            updateItem);
+router.delete('/:id',  requireRole('admin'),            deleteItem);
 
 module.exports = router;

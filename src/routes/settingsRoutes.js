@@ -4,17 +4,24 @@ const {
   getSettings, upsertSettings, uploadLogo, deleteLogo,
   getAcademicYears, createAcademicYear, setActiveYear, deleteAcademicYear,
 } = require('../controllers/settingsController');
-const { photoUpload } = require('../middleware/upload');
+const { photoUpload }   = require('../middleware/upload');
+const { requireRole }   = require('../middleware/authMiddleware');
+const { auditMiddleware } = require('../middleware/auditLog');
 
-router.get('/academic-years',                getAcademicYears);
-router.post('/academic-years',               createAcademicYear);
-router.patch('/academic-years/:id/activate', setActiveYear);
-router.delete('/academic-years/:id',         deleteAcademicYear);
+router.use(auditMiddleware('settings'));
 
-router.post('/logo',   photoUpload.single('logo'), uploadLogo);
-router.delete('/logo', deleteLogo);
+// Academic years — read available to all staff; mutations admin only
+router.get('/academic-years',                requireRole('admin', 'teacher'), getAcademicYears);
+router.post('/academic-years',               requireRole('admin'),            createAcademicYear);
+router.patch('/academic-years/:id/activate', requireRole('admin'),            setActiveYear);
+router.delete('/academic-years/:id',         requireRole('admin'),            deleteAcademicYear);
 
-router.get('/',  getSettings);
-router.put('/',  upsertSettings);
+// Logo — admin only
+router.post('/logo',   requireRole('admin'), photoUpload.single('logo'), uploadLogo);
+router.delete('/logo', requireRole('admin'), deleteLogo);
+
+// School settings — read available to all staff (school name shown in header)
+router.get('/',  requireRole('admin', 'teacher'), getSettings);
+router.put('/',  requireRole('admin'),            upsertSettings);
 
 module.exports = router;

@@ -13,26 +13,30 @@ const {
   getStudentHistory,
   getAttendanceRegister,
 } = require('../controllers/attendanceController');
+const { requireRole }     = require('../middleware/authMiddleware');
+const { auditMiddleware } = require('../middleware/auditLog');
 
-// Fetch helpers (used by Mark Attendance tab)
-router.get('/class-students',    getClassStudentsAttendance); // ?class_id&date&period_id
-router.get('/teachers-status',   getTeachersAttendance);     // ?date
+router.use(auditMiddleware('attendance'));
 
-// Mark
-router.post('/bulk',  bulkMark);   // body: { records: [...] }
-router.post('/',      markSingle); // body: single record
+// Fetch helpers
+router.get('/class-students',    requireRole('admin', 'teacher'), getClassStudentsAttendance);
+router.get('/teachers-status',   requireRole('admin', 'teacher'), getTeachersAttendance);
 
-// Edit / Delete
-router.put('/:id',    updateAttendance);
-router.delete('/:id', deleteAttendance);
+// Mark attendance — teachers can mark their own classes
+router.post('/bulk',  requireRole('admin', 'teacher'), bulkMark);
+router.post('/',      requireRole('admin', 'teacher'), markSingle);
+
+// Edit / Delete — admin only (prevents unauthorized changes)
+router.put('/:id',    requireRole('admin'), updateAttendance);
+router.delete('/:id', requireRole('admin'), deleteAttendance);
 
 // Reports
-router.get('/register',      getAttendanceRegister); // ?class_id&month — printable register
-router.get('/monthly',       getMonthlySummary);     // ?entity_type&class_id&month
-router.get('/daily-summary', getDailySummary);       // ?entity_type&date&class_id
-router.get('/export',        exportCSV);             // ?entity_type&class_id&month
+router.get('/register',      requireRole('admin', 'teacher'), getAttendanceRegister);
+router.get('/monthly',       requireRole('admin', 'teacher'), getMonthlySummary);
+router.get('/daily-summary', requireRole('admin', 'teacher'), getDailySummary);
+router.get('/export',        requireRole('admin'),            exportCSV);
 
 // Per-student history
-router.get('/student/:id/history', getStudentHistory); // ?month
+router.get('/student/:id/history', requireRole('admin', 'teacher'), getStudentHistory);
 
 module.exports = router;
