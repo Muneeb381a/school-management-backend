@@ -44,6 +44,7 @@ const incomeRoutes       = require('./routes/incomeRoutes');
 const searchRoutes       = require('./routes/searchRoutes');
 const leaveRoutes        = require('./routes/leaveRoutes');
 const syllabusRoutes     = require('./routes/syllabusRoutes');
+const analyticsRoutes    = require('./routes/analyticsRoutes');
 
 const app = express();
 
@@ -210,6 +211,7 @@ const routeMap = [
   ['/search',        searchRoutes],
   ['/leaves',        leaveRoutes],
   ['/syllabus',      syllabusRoutes],
+  ['/analytics',     analyticsRoutes],
 ];
 
 for (const [path, router] of routeMap) {
