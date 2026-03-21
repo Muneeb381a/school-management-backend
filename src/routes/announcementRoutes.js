@@ -4,7 +4,7 @@ const {
   getAnnouncements, getActiveAnnouncements, getForStudents, getForTeachers,
   getRecent, getHistory, getAnnouncementById,
   createAnnouncement, updateAnnouncement, toggleActive, deleteAnnouncement,
-  markRead, getReadStats,
+  markRead, getReadStats, sendEmail,
 } = require('../controllers/announcementController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
@@ -25,6 +25,9 @@ router.get('/:id',      requireRole('admin', 'teacher'), getAnnouncementById);
 router.put('/:id',      requireRole('admin'),            updateAnnouncement);
 router.patch('/:id/toggle', requireRole('admin'),        toggleActive);
 router.delete('/:id',   requireRole('admin'),            deleteAnnouncement);
+
+// Email broadcast — admin only
+router.post('/:id/send-email', requireRole('admin'), sendEmail);
 
 // Read tracking — all staff can mark as read
 router.post('/:id/read', requireRole('admin', 'teacher'), markRead);

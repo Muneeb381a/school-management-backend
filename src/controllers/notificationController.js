@@ -5,14 +5,16 @@ const serverErr = (res, err) => {
   res.status(500).json({ success: false, message: err.message });
 };
 
-// GET /api/notifications  — list recent 60
+// GET /api/notifications  — list recent 60 for this user (own + global)
 const getNotifications = async (req, res) => {
   try {
+    const userId = req.user?.id || null;
     const { rows } = await pool.query(`
       SELECT * FROM notifications
+      WHERE (user_id = $1 OR user_id IS NULL)
       ORDER BY created_at DESC
       LIMIT 60
-    `);
+    `, [userId]);
     res.json({ success: true, data: rows, total: rows.length });
   } catch (err) { serverErr(res, err); }
 };
@@ -20,7 +22,11 @@ const getNotifications = async (req, res) => {
 // GET /api/notifications/unread-count
 const getUnreadCount = async (req, res) => {
   try {
-    const { rows } = await pool.query(`SELECT COUNT(*)::int AS count FROM notifications WHERE is_read = FALSE`);
+    const userId = req.user?.id || null;
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM notifications WHERE is_read = FALSE AND (user_id = $1 OR user_id IS NULL)`,
+      [userId]
+    );
     res.json({ success: true, count: rows[0].count });
   } catch (err) { serverErr(res, err); }
 };
@@ -28,7 +34,11 @@ const getUnreadCount = async (req, res) => {
 // PATCH /api/notifications/:id/read
 const markRead = async (req, res) => {
   try {
-    await pool.query(`UPDATE notifications SET is_read = TRUE WHERE id = $1`, [req.params.id]);
+    const userId = req.user?.id || null;
+    await pool.query(
+      `UPDATE notifications SET is_read = TRUE WHERE id = $1 AND (user_id = $2 OR user_id IS NULL)`,
+      [req.params.id, userId]
+    );
     res.json({ success: true });
   } catch (err) { serverErr(res, err); }
 };
@@ -36,7 +46,11 @@ const markRead = async (req, res) => {
 // POST /api/notifications/mark-all-read
 const markAllRead = async (req, res) => {
   try {
-    const { rowCount } = await pool.query(`UPDATE notifications SET is_read = TRUE WHERE is_read = FALSE`);
+    const userId = req.user?.id || null;
+    const { rowCount } = await pool.query(
+      `UPDATE notifications SET is_read = TRUE WHERE is_read = FALSE AND (user_id = $1 OR user_id IS NULL)`,
+      [userId]
+    );
     res.json({ success: true, updated: rowCount });
   } catch (err) { serverErr(res, err); }
 };
@@ -44,7 +58,11 @@ const markAllRead = async (req, res) => {
 // DELETE /api/notifications/:id
 const deleteNotification = async (req, res) => {
   try {
-    await pool.query(`DELETE FROM notifications WHERE id = $1`, [req.params.id]);
+    const userId = req.user?.id || null;
+    await pool.query(
+      `DELETE FROM notifications WHERE id = $1 AND (user_id = $2 OR user_id IS NULL)`,
+      [req.params.id, userId]
+    );
     res.json({ success: true });
   } catch (err) { serverErr(res, err); }
 };

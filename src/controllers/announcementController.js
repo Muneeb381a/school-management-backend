@@ -1,4 +1,6 @@
-const pool = require('../db');
+const pool                = require('../db');
+const { sendMail }        = require('../utils/mailer');
+const { announcementEmail } = require('../utils/emailTemplates');
 
 const serverErr = (res, err) => {
   console.error('[ANNOUNCEMENTS]', err.message);
@@ -427,6 +429,83 @@ const getReadStats = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════════════════════
+//  SEND EMAIL BROADCAST  — POST /api/announcements/:id/send-email
+//  Sends the announcement as an email to the target audience.
+//  Returns { emailsSent, skipped }.
+// ══════════════════════════════════════════════════════════════
+const sendEmail = async (req, res) => {
+  try {
+    const { rows: annRows } = await pool.query(
+      `SELECT * FROM announcements WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!annRows[0]) return res.status(404).json({ success: false, message: 'Announcement not found' });
+    const ann = annRows[0];
+
+    const audience = ann.target_audience; // all | students | teachers | parents | class
+    const emails   = new Set();
+
+    // Collect student parent emails
+    if (['all', 'students', 'parents', 'class'].includes(audience)) {
+      let q = `SELECT parent_email FROM students WHERE is_active = TRUE AND parent_email IS NOT NULL AND parent_email <> ''`;
+      const params = [];
+      if (audience === 'class' && ann.class_id) {
+        q += ` AND class_id = $1`;
+        params.push(ann.class_id);
+      }
+      const { rows } = await pool.query(q, params);
+      rows.forEach(r => emails.add(r.parent_email.trim().toLowerCase()));
+    }
+
+    // Collect teacher emails
+    if (['all', 'teachers'].includes(audience)) {
+      const { rows } = await pool.query(
+        `SELECT email FROM teachers WHERE is_active = TRUE AND email IS NOT NULL AND email <> ''`
+      );
+      rows.forEach(r => emails.add(r.email.trim().toLowerCase()));
+    }
+
+    if (emails.size === 0) {
+      return res.json({ success: true, emailsSent: 0, skipped: 0, message: 'No email addresses found for target audience' });
+    }
+
+    const template = announcementEmail({
+      title:      ann.title,
+      message:    ann.message,
+      type:       ann.announcement_type,
+      priority:   ann.priority,
+      schoolName: process.env.SCHOOL_NAME,
+    });
+
+    let emailsSent = 0;
+    let skipped    = 0;
+    const allEmails = [...emails];
+
+    // Send in batches of 10 to avoid overwhelming SMTP
+    for (let i = 0; i < allEmails.length; i += 10) {
+      const batch = allEmails.slice(i, i + 10);
+      await Promise.allSettled(
+        batch.map(to =>
+          sendMail({ to, subject: template.subject, html: template.html, text: template.text })
+            .then(() => { emailsSent++; })
+            .catch(() => { skipped++; })
+        )
+      );
+    }
+
+    // Update announcement record
+    await pool.query(
+      `UPDATE announcements SET email_sent_at = NOW(), email_sent_count = $1 WHERE id = $2`,
+      [emailsSent, ann.id]
+    );
+
+    res.json({ success: true, emailsSent, skipped, total: emails.size });
+  } catch (err) {
+    serverErr(res, err);
+  }
+};
+
 module.exports = {
   getAnnouncements,
   getActiveAnnouncements,
@@ -441,4 +520,5 @@ module.exports = {
   deleteAnnouncement,
   markRead,
   getReadStats,
+  sendEmail,
 };

@@ -1500,6 +1500,98 @@ const exportFeesExcel = async (req, res, next) => {
   }
 };
 
+// ══════════════════════════════════════════════════════════════
+//  SEND FEE REMINDERS  — POST /api/fees/send-reminders
+//  Sends email + SMS reminders for overdue / due-soon invoices.
+//  Deduplicates using fee_reminder_log (one per invoice/channel/day).
+//  Body: { channel: 'email'|'sms'|'both', status: 'overdue'|'due_soon'|'both' }
+// ══════════════════════════════════════════════════════════════
+const { sendMail }         = require('../utils/mailer');
+const { sendSMS }          = require('../utils/sms');
+const { feeReminderEmail } = require('../utils/emailTemplates');
+
+const sendFeeReminders = async (req, res) => {
+  const { channel = 'both', status = 'both' } = req.body;
+  const client = await pool.connect();
+  try {
+    const today   = new Date().toISOString().slice(0, 10);
+    const in3days = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+
+    const statusFilter =
+      status === 'overdue'  ? `fi.status = 'overdue'` :
+      status === 'due_soon' ? `fi.status IN ('unpaid','partial') AND fi.due_date BETWEEN '${today}' AND '${in3days}'` :
+      `(fi.status = 'overdue' OR (fi.status IN ('unpaid','partial') AND fi.due_date BETWEEN '${today}' AND '${in3days}'))`;
+
+    const { rows: invoices } = await client.query(`
+      SELECT fi.id, fi.invoice_no, fi.net_amount, fi.due_date, fi.status,
+             s.full_name AS student_name, s.parent_email, s.parent_phone
+      FROM fee_invoices fi
+      JOIN students s ON s.id = fi.student_id
+      WHERE ${statusFilter} AND fi.due_date IS NOT NULL
+      ORDER BY fi.due_date ASC
+    `);
+
+    let emailsSent = 0, smsSent = 0, skipped = 0;
+
+    for (const inv of invoices) {
+      const invStatus = inv.status === 'overdue' ? 'overdue' : 'due_soon';
+
+      // ── Email ────────────────────────────────────────────────
+      if (['email', 'both'].includes(channel) && inv.parent_email) {
+        const { rows: logRows } = await client.query(
+          `SELECT id FROM fee_reminder_log WHERE invoice_id = $1 AND channel = 'email' AND sent_date = CURRENT_DATE`,
+          [inv.id]
+        );
+        if (logRows.length === 0) {
+          const tpl = feeReminderEmail({
+            studentName: inv.student_name,
+            invoiceNo:   inv.invoice_no,
+            amount:      inv.net_amount,
+            dueDate:     inv.due_date,
+            status:      invStatus,
+          });
+          try {
+            await sendMail({ to: inv.parent_email, subject: tpl.subject, html: tpl.html, text: tpl.text });
+            await client.query(
+              `INSERT INTO fee_reminder_log (invoice_id, channel, sent_to) VALUES ($1, 'email', $2) ON CONFLICT DO NOTHING`,
+              [inv.id, inv.parent_email]
+            );
+            emailsSent++;
+          } catch { skipped++; }
+        } else { skipped++; }
+      }
+
+      // ── SMS ──────────────────────────────────────────────────
+      if (['sms', 'both'].includes(channel) && inv.parent_phone) {
+        const { rows: logRows } = await client.query(
+          `SELECT id FROM fee_reminder_log WHERE invoice_id = $1 AND channel = 'sms' AND sent_date = CURRENT_DATE`,
+          [inv.id]
+        );
+        if (logRows.length === 0) {
+          const message = `Dear Parent, fee invoice ${inv.invoice_no} for ${inv.student_name} is ${invStatus === 'overdue' ? 'OVERDUE' : 'due soon'} (PKR ${Number(inv.net_amount || 0).toLocaleString()}). Please clear dues at the earliest.`;
+          try {
+            const result = await sendSMS({ to: inv.parent_phone, message });
+            if (result.ok) {
+              await client.query(
+                `INSERT INTO fee_reminder_log (invoice_id, channel, sent_to) VALUES ($1, 'sms', $2) ON CONFLICT DO NOTHING`,
+                [inv.id, inv.parent_phone]
+              );
+              smsSent++;
+            } else { skipped++; }
+          } catch { skipped++; }
+        } else { skipped++; }
+      }
+    }
+
+    res.json({ success: true, invoicesProcessed: invoices.length, emailsSent, smsSent, skipped });
+  } catch (err) {
+    console.error('[FEE REMINDERS]', err.message);
+    res.status(500).json({ success: false, message: err.message });
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   getFeeHeads, createFeeHead, updateFeeHead, deleteFeeHead,
   getFeeStructures, upsertFeeStructure, deleteFeeStructure,
@@ -1510,4 +1602,5 @@ module.exports = {
   getConcessions, saveConcession, deleteConcession, applyLateFees,
   bulkRecordPayments, getChallanPrint,
   getPaymentImportTemplate, importFeePayments, exportFeesExcel,
+  sendFeeReminders,
 };

@@ -11,6 +11,7 @@ const {
   getConcessions, saveConcession, deleteConcession, applyLateFees,
   getChallanPrint,
   getPaymentImportTemplate, importFeePayments, exportFeesExcel,
+  sendFeeReminders,
 } = require('../controllers/feeController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
@@ -68,5 +69,8 @@ router.get('/reports/by-class',        requireRole('admin', 'teacher'), getByCla
 router.get('/reports/daily',           requireRole('admin', 'teacher'), getDailyReport);
 router.get('/reports/student/:id',     requireRole('admin', 'teacher'), getStudentFeeHistory);
 router.get('/export',                  requireRole('admin'),            exportFeesExcel);
+
+// Fee reminders (email + SMS)
+router.post('/send-reminders',         requireRole('admin'),            sendFeeReminders);
 
 module.exports = router;

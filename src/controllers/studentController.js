@@ -11,7 +11,7 @@ const ALL_FIELDS = [
   'full_name','full_name_urdu','date_of_birth','place_of_birth','gender',
   'religion','nationality','b_form_no','blood_group',
   'email','phone','emergency_contact','address','city','province','postal_code',
-  'grade','section','roll_number','admission_date',
+  'grade','section','roll_number','admission_number','admission_date',
   'previous_school','previous_class','previous_marks','leaving_reason',
   'father_name','father_cnic','father_occupation','father_education','father_phone','father_email',
   'mother_name','mother_cnic','mother_occupation','mother_phone',
@@ -21,12 +21,15 @@ const ALL_FIELDS = [
   'siblings_in_school','extra_curricular','house_color','status',
 ];
 
-const DATE_FIELDS    = ['date_of_birth', 'admission_date'];
-const BOOLEAN_FIELDS = ['transport_required', 'hostel_required'];
+const DATE_FIELDS      = ['date_of_birth', 'admission_date'];
+const BOOLEAN_FIELDS   = ['transport_required', 'hostel_required'];
+// Never overwritten by client on update — auto-generated on create only
+const IMMUTABLE_FIELDS = ['admission_number', 'roll_number'];
 
-function pickFields(body) {
+function pickFields(body, forUpdate = false) {
   const result = {};
   for (const f of ALL_FIELDS) {
+    if (forUpdate && IMMUTABLE_FIELDS.includes(f)) continue;
     let val = body[f] !== undefined ? body[f] : null;
     if (val === '') val = null;
     if (DATE_FIELDS.includes(f) && !val) val = null;
@@ -60,7 +63,7 @@ const getAllStudents = async (req, res, next) => {
 
     const selectCols = `
       s.id, s.full_name, s.full_name_urdu, s.email, s.phone, s.grade, s.section,
-      s.roll_number, s.gender, s.b_form_no, s.blood_group, s.city, s.province,
+      s.roll_number, s.admission_number, s.gender, s.b_form_no, s.blood_group, s.city, s.province,
       s.status, s.admission_date, s.created_at, s.class_id, s.photo_url,
       c.name AS class_name, c.section AS class_section`;
 
@@ -102,6 +105,26 @@ const createStudent = async (req, res, next) => {
     await client.query('BEGIN');
     const fields = pickFields(req.body);
 
+    // ── Auto-generate admission number ────────────────────────
+    const year = new Date().getFullYear();
+    const { rows: seqRows } = await client.query(`SELECT nextval('admission_number_seq') AS seq`);
+    fields.admission_number = `ADM-${year}-${String(seqRows[0].seq).padStart(4, '0')}`;
+
+    // ── Auto-generate roll number ─────────────────────────────
+    // Sequential within the assigned class; falls back to global count
+    if (fields.class_id) {
+      const { rows: cntRows } = await client.query(
+        `SELECT COUNT(*)::int AS cnt FROM students WHERE class_id = $1 AND deleted_at IS NULL`,
+        [fields.class_id]
+      );
+      fields.roll_number = String(cntRows[0].cnt + 1).padStart(3, '0');
+    } else {
+      const { rows: cntRows } = await client.query(
+        `SELECT COUNT(*)::int AS cnt FROM students WHERE deleted_at IS NULL`
+      );
+      fields.roll_number = String(cntRows[0].cnt + 1).padStart(4, '0');
+    }
+
     const keys         = Object.keys(fields);
     const values       = Object.values(fields);
     const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
@@ -137,7 +160,7 @@ const createStudent = async (req, res, next) => {
 
 const updateStudent = async (req, res, next) => {
   try {
-    const fields    = pickFields(req.body);
+    const fields    = pickFields(req.body, true); // forUpdate=true → skips immutable fields
     const keys      = Object.keys(fields);
     const values    = Object.values(fields);
     const setClause = keys.map((k, i) => `${k} = $${i + 1}`).join(', ');
