@@ -9,6 +9,7 @@ const {
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
 const { csvUpload }       = require('../middleware/upload');
+const { createExpenseValidator } = require('../middleware/validate');
 
 router.use(auditMiddleware('expense'));
 
@@ -30,7 +31,7 @@ router.get('/reports/by-category', requireRole('admin', 'teacher'), getByCategor
 
 // Expenses CRUD
 router.get('/',     requireRole('admin', 'teacher'), getExpenses);
-router.post('/',    requireRole('admin'),            createExpense);
+router.post('/',    requireRole('admin'), createExpenseValidator, createExpense);
 router.get('/:id',  requireRole('admin', 'teacher'), getExpenseById);
 router.put('/:id',  requireRole('admin'),            updateExpense);
 router.delete('/:id', requireRole('admin'),          deleteExpense);

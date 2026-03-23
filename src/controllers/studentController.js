@@ -5,6 +5,7 @@ const { parsePagination, paginationMeta } = require('../utils/pagination');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
 const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
 const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
+const { sendMail }                              = require('../utils/mailer');
 
 const ALL_FIELDS = [
   'class_id',
@@ -138,16 +139,39 @@ const createStudent = async (req, res, next) => {
     const rawPw    = `Stu@${student.id}`;
     const hashed   = await bcrypt.hash(rawPw, 10);
     await client.query(
-      `INSERT INTO users (username, password, role, name, entity_id)
-       VALUES ($1,$2,'student',$3,$4)
+      `INSERT INTO users (username, password, role, name, entity_id, must_change_password)
+       VALUES ($1,$2,'student',$3,$4,TRUE)
        ON CONFLICT (username) DO NOTHING`,
       [username, hashed, student.full_name, student.id]
     );
     await client.query('COMMIT');
+
+    // Try to email credentials — prefer student email, fall back to father email
+    const emailTo = student.email || student.father_email || null;
+    let emailSent = false;
+    if (emailTo) {
+      try {
+        await sendMail({
+          to:      emailTo,
+          subject: 'Your School Portal Login Credentials',
+          html:    `<p>Dear ${student.full_name},</p>
+                    <p>Your login credentials for the school portal have been created:</p>
+                    <ul>
+                      <li><strong>Username:</strong> ${username}</li>
+                      <li><strong>Temporary Password:</strong> ${rawPw}</li>
+                    </ul>
+                    <p>Please log in and change your password immediately.</p>`,
+        });
+        emailSent = true;
+      } catch { /* email failure is non-blocking */ }
+    }
+
     res.status(201).json({
       success:     true,
       data:        student,
-      credentials: { username, password: rawPw },
+      credentials: emailSent
+        ? { username, emailSent: true, note: `Credentials emailed to ${emailTo}` }
+        : { username, tempPassword: rawPw, note: 'No email on file — share this password with the student directly. It will not be shown again.' },
       message:     'Student enrolled successfully.',
     });
   } catch (err) {
@@ -241,9 +265,15 @@ const promoteStudents = async (req, res, next) => {
   }
 };
 
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+
 const uploadPhoto = async (req, res, next) => {
   try {
     if (!req.file) throw new AppError('No file uploaded.', 400);
+    if (!ALLOWED_IMAGE_TYPES.includes(req.file.mimetype))
+      throw new AppError('Only JPG, PNG, or WebP images are allowed.', 400);
+    if (req.file.size > 5 * 1024 * 1024)
+      throw new AppError('File size must not exceed 5 MB.', 400);
     const { rows: old } = await pool.query('SELECT photo_url FROM students WHERE id=$1', [req.params.id]);
     if (!old[0]) throw new AppError('Student not found.', 404);
     if (old[0]?.photo_url) await deleteFromCloudinary(old[0].photo_url);
@@ -301,19 +331,47 @@ const deleteDocument = async (req, res, next) => {
 
 const resetCredentials = async (req, res, next) => {
   try {
-    const { rows } = await pool.query('SELECT id, full_name FROM students WHERE id=$1', [req.params.id]);
+    const { rows } = await pool.query(
+      'SELECT id, full_name, email, father_email FROM students WHERE id=$1',
+      [req.params.id]
+    );
     if (!rows[0]) throw new AppError('Student not found.', 404);
     const student  = rows[0];
     const username = buildUsername(student.full_name, student.id);
     const rawPw    = `Stu@${student.id}`;
     const hashed   = await bcrypt.hash(rawPw, 10);
     await pool.query(
-      `INSERT INTO users (username, password, role, name, entity_id)
-       VALUES ($1,$2,'student',$3,$4)
-       ON CONFLICT (username) DO UPDATE SET password=$2`,
+      `INSERT INTO users (username, password, role, name, entity_id, must_change_password)
+       VALUES ($1,$2,'student',$3,$4,TRUE)
+       ON CONFLICT (username) DO UPDATE SET password=$2, must_change_password=TRUE`,
       [username, hashed, student.full_name, student.id]
     );
-    res.json({ success: true, credentials: { username, password: rawPw } });
+
+    const emailTo = student.email || student.father_email || null;
+    let emailSent = false;
+    if (emailTo) {
+      try {
+        await sendMail({
+          to:      emailTo,
+          subject: 'Your School Portal Password Has Been Reset',
+          html:    `<p>Dear ${student.full_name},</p>
+                    <p>Your school portal password has been reset:</p>
+                    <ul>
+                      <li><strong>Username:</strong> ${username}</li>
+                      <li><strong>Temporary Password:</strong> ${rawPw}</li>
+                    </ul>
+                    <p>Please log in and change your password immediately.</p>`,
+        });
+        emailSent = true;
+      } catch { /* email failure is non-blocking */ }
+    }
+
+    res.json({
+      success:     true,
+      credentials: emailSent
+        ? { username, emailSent: true, note: `New password emailed to ${emailTo}` }
+        : { username, tempPassword: rawPw, note: 'No email on file — share this password directly. It will not be shown again.' },
+    });
   } catch (err) {
     next(err);
   }
@@ -478,10 +536,29 @@ const exportStudents = async (req, res, next) => {
   }
 };
 
+// ── GET /api/students/:id/credentials ────────────────────────────
+// Returns username + account status without resetting the password
+const getStudentCredentials = async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.username, u.must_change_password, u.is_active, u.last_login_at
+       FROM users u
+       JOIN students s ON s.id = u.entity_id
+       WHERE u.role='student' AND s.id=$1 AND s.deleted_at IS NULL`,
+      [req.params.id]
+    );
+    // Also include student id for deriving default password
+    const { rows: sRows } = await pool.query('SELECT id FROM students WHERE id=$1', [req.params.id]);
+    if (!sRows[0]) return res.status(404).json({ success: false, message: 'Student not found' });
+    res.json({ success: true, data: rows[0] || null, student_id: sRows[0].id });
+  } catch (err) { next(err); }
+};
+
 module.exports = {
   getAllStudents, getStudentById, createStudent, updateStudent, deleteStudent,
   getDeletedStudents, restoreStudent,
   promoteStudents,
   uploadPhoto, listDocuments, uploadDocument, deleteDocument, resetCredentials,
   getImportTemplate, importStudents, exportStudents,
+  getStudentCredentials,
 };

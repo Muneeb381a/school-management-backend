@@ -194,7 +194,7 @@ const generateNotifications = async (req, res) => {
 
     // ── 6. Upcoming exams in ≤3 days ───────────────────────────
     const { rows: upcomingExams } = await client.query(`
-      SELECT id, name, start_date, academic_year
+      SELECT id, exam_name, start_date, academic_year
       FROM exams
       WHERE start_date BETWEEN $1 AND $2
         AND status NOT IN ('completed','cancelled')
@@ -202,10 +202,31 @@ const generateNotifications = async (req, res) => {
     for (const exam of upcomingExams) {
       await ins(
         'upcoming_exam',
-        `Upcoming Exam — ${exam.name}`,
-        `"${exam.name}" (${exam.academic_year}) starts on ${exam.start_date}.`,
+        `Upcoming Exam — ${exam.exam_name}`,
+        `"${exam.exam_name}" (${exam.academic_year}) starts on ${exam.start_date}.`,
         '/exams',
         `upcoming_exam_${exam.id}_${today}`
+      );
+    }
+
+    // ── 7. Pending leave requests (unnotified) ──────────────────
+    const { rows: pendingLeaves } = await client.query(`
+      SELECT tl.id, tl.from_date, tl.to_date, tl.total_days,
+             t.full_name AS teacher_name,
+             lt.name     AS leave_type_name
+      FROM teacher_leaves tl
+      JOIN teachers   t  ON t.id  = tl.teacher_id
+      JOIN leave_types lt ON lt.id = tl.leave_type_id
+      WHERE tl.status = 'pending'
+    `);
+    const fmtD = (d) => d ? new Date(d).toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+    for (const lv of pendingLeaves) {
+      await ins(
+        'leave_request',
+        `Leave Request — ${lv.teacher_name}`,
+        `${lv.teacher_name} applied for ${lv.leave_type_name} (${lv.total_days} day${lv.total_days !== 1 ? 's' : ''}) from ${fmtD(lv.from_date)} to ${fmtD(lv.to_date)}.`,
+        '/leaves',
+        `leave_request_${lv.id}`
       );
     }
 

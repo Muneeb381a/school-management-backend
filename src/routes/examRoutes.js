@@ -7,6 +7,8 @@ const {
   updateExam,
   updateExamStatus,
   deleteExam,
+  publishResults,
+  unpublishResults,
   getExamSubjects,
   addExamSubject,
   removeExamSubject,
@@ -45,6 +47,10 @@ router.delete('/subjects/:id',   requireRole('admin'),            removeExamSubj
 router.get('/:examId/marks',    requireRole('admin', 'teacher'), getMarks);
 router.post('/:examId/marks',   requireRole('admin', 'teacher'), submitMarks);   // teachers enter marks
 router.delete('/marks/:id',     requireRole('admin'),            deleteMark);
+
+// ── Publish / Unpublish results ───────────────────────────────
+router.post('/:examId/publish-results',   requireRole('admin'), publishResults);
+router.delete('/:examId/publish-results', requireRole('admin'), unpublishResults);
 
 // ── Results ───────────────────────────────────────────────────
 router.post('/:examId/calculate-results',                  requireRole('admin'),            calculateResults);

@@ -23,6 +23,9 @@ const REFRESH_TTL_MS  = 7 * 24 * 60 * 60 * 1000;
 
 // ── Account lockout config ────────────────────────────────────────
 const MAX_FAIL_ATTEMPTS = 5;
+
+// Dummy hash for constant-time comparison when user doesn't exist (prevents username enumeration)
+const DUMMY_HASH = '$2a$10$E3p.jnEe8ZWWbHaxKFciou7PXEUmcOPQ0SjCvzkzZnp5z5QZF7.ki';
 const LOCK_WINDOW_MS    = 15 * 60 * 1000;
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -85,23 +88,24 @@ async function login(req, res, next) {
     await checkLockout(username);
 
     const { rows } = await pool.query(
-      'SELECT * FROM users WHERE username = $1 AND is_active = TRUE',
+      `SELECT id, username, password, name, role, entity_id, email,
+              is_active, must_change_password
+       FROM users WHERE username = $1 AND is_active = TRUE`,
       [username.trim().toLowerCase()]
     );
     const user = rows[0];
 
-    if (!user) {
-      await recordAttempt(username, ip, false);
-      throw new AppError('Invalid username or password.', 401, 'INVALID_CREDENTIALS');
-    }
+    // Always run bcrypt compare — even when user doesn't exist — to prevent timing-based
+    // username enumeration (A9 fix: constant-time path regardless of user existence)
+    const valid = await bcrypt.compare(password, user?.password ?? DUMMY_HASH);
 
-    const valid = await bcrypt.compare(password, user.password);
-    if (!valid) {
+    if (!user || !valid) {
       await recordAttempt(username, ip, false);
       throw new AppError('Invalid username or password.', 401, 'INVALID_CREDENTIALS');
     }
 
     await recordAttempt(username, ip, true);
+    await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
 
     const payload = {
       id:        user.id,
@@ -117,7 +121,15 @@ async function login(req, res, next) {
 
     logAction({ userId: user.id, username: user.username, action: 'LOGIN', resource: 'auth', req });
 
-    return res.json({ success: true, data: { accessToken, refreshToken, user: payload } });
+    return res.json({
+      success: true,
+      data: {
+        accessToken,
+        refreshToken,
+        user: payload,
+        mustChangePassword: user.must_change_password || false,
+      },
+    });
   } catch (err) {
     next(err);
   }

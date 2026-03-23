@@ -7,7 +7,18 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "db:init": "node src/db/init.js",
-    "db:seed": "node src/db/seed.js"
+    "db:seed": "node src/db/seed.js",
+    "db:seed-phase6": "node src/db/seed_phase6.js",
+    "test": "jest --forceExit",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage --forceExit"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/tests/**/*.test.js"],
+    "setupFiles": ["./tests/setup.js"],
+    "testTimeout": 30000,
+    "verbose": true
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -19,14 +30,22 @@
     "express": "^4.19.2",
     "express-rate-limit": "^8.3.1",
     "helmet": "^8.1.0",
+    "ioredis": "^5.10.1",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.10.1",
     "multer": "^2.1.1",
     "nodemailer": "^8.0.3",
     "pg": "^8.11.5",
+    "pg-boss": "^12.14.0",
+    "pino": "^10.3.1",
+    "pino-pretty": "^13.1.3",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0"
+    "jest": "^30.3.0",
+    "nodemon": "^3.1.0",
+    "supertest": "^7.2.2"
   }
 }

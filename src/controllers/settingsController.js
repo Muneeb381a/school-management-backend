@@ -1,4 +1,5 @@
-const pool = require('../db');
+const pool  = require('../db');
+const cache = require('../utils/cache');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
 
 const serverErr = (res, err) => {
@@ -8,11 +9,17 @@ const serverErr = (res, err) => {
 
 // ── School Settings ───────────────────────────────────────────
 
+const SETTINGS_CACHE_KEY = 'settings:all';
+
 const getSettings = async (req, res) => {
   try {
+    const cached = await cache.get(SETTINGS_CACHE_KEY);
+    if (cached) return res.json({ success: true, data: cached });
+
     const { rows } = await pool.query('SELECT key, value FROM settings ORDER BY key');
     const data = {};
     rows.forEach(r => { data[r.key] = r.value; });
+    await cache.set(SETTINGS_CACHE_KEY, data, 3600); // 1-hour TTL
     res.json({ success: true, data });
   } catch (err) { serverErr(res, err); }
 };
@@ -27,6 +34,7 @@ const upsertSettings = async (req, res) => {
         ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()
       `, [key, value ?? null]);
     }
+    await cache.del(SETTINGS_CACHE_KEY); // Invalidate cache on update
     res.json({ success: true, message: 'Settings saved' });
   } catch (err) { serverErr(res, err); }
 };

@@ -1,7 +1,10 @@
-const pool = require('../db');
+const pool  = require('../db');
+const cache = require('../utils/cache');
+const { childLogger } = require('../utils/logger');
+const log = childLogger('DASHBOARD');
 
 const serverErr = (res, err) => {
-  console.error('[DASHBOARD]', err.message);
+  log.error({ err: err.message }, 'Dashboard error');
   res.status(500).json({ success: false, message: err.message });
 };
 
@@ -10,6 +13,13 @@ const serverErr = (res, err) => {
 const getStats = async (req, res) => {
   try {
     const today      = new Date().toISOString().slice(0, 10);
+    // Cache key includes today's date so stats auto-expire at midnight
+    const cacheKey = `dashboard:stats:${today}`;
+    const cached = await cache.get(cacheKey);
+    if (cached) {
+      log.debug({ cacheKey }, 'Dashboard stats cache hit');
+      return res.json({ success: true, data: cached, _cached: true });
+    }
     const thisMonth  = today.slice(0, 7);
 
     // Start of the 6-month window (1st of 5 months ago)
@@ -29,6 +39,7 @@ const getStats = async (req, res) => {
       feeDefaulters,
       chronicAbsent,
       overdueBooks,
+      countsRow,
     ] = await Promise.all([
 
       // 1. Today's student attendance
@@ -146,6 +157,16 @@ const getStats = async (req, res) => {
          WHERE due_date < $1 AND status IN ('issued','overdue') AND return_date IS NULL`,
         [today]
       ),
+
+      // 11. Totals: students, teachers, classes
+      pool.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM students  WHERE status = 'active'   AND deleted_at IS NULL) AS total_students,
+           (SELECT COUNT(*)::int FROM students  WHERE status = 'active' AND gender = 'Male'   AND deleted_at IS NULL) AS male_students,
+           (SELECT COUNT(*)::int FROM students  WHERE status = 'active' AND gender = 'Female' AND deleted_at IS NULL) AS female_students,
+           (SELECT COUNT(*)::int FROM teachers  WHERE status = 'active'   AND deleted_at IS NULL) AS total_teachers,
+           (SELECT COUNT(*)::int FROM classes)                                                     AS total_classes`
+      ),
     ]);
 
     // ── Build monthly chart (last 6 months, merge fee + expense rows) ──
@@ -178,9 +199,15 @@ const getStats = async (req, res) => {
     const invoiced  = parseFloat(feeInvoiced.rows[0]?.invoiced   || 0);
     const feePct    = invoiced > 0 ? Math.round((collected / invoiced) * 100) : null;
 
-    res.json({
-      success: true,
-      data: {
+    const counts = countsRow.rows[0] || {};
+    const payload = {
+        counts: {
+          total_students:  counts.total_students  || 0,
+          male_students:   counts.male_students   || 0,
+          female_students: counts.female_students || 0,
+          total_teachers:  counts.total_teachers  || 0,
+          total_classes:   counts.total_classes   || 0,
+        },
         kpis: {
           attendance_today_pct:  attPct,
           attendance_present:    attPresent,
@@ -202,9 +229,215 @@ const getStats = async (req, res) => {
           chronic_absent:  parseInt(chronicAbsent.rows[0]?.count  || 0),
           overdue_books:   parseInt(overdueBooks.rows[0]?.count    || 0),
         },
-      },
-    });
+    };
+
+    // Cache for 5 minutes (dashboard is refreshed frequently)
+    await cache.set(cacheKey, payload, 300);
+
+    res.json({ success: true, data: payload });
   } catch (err) { serverErr(res, err); }
 };
 
-module.exports = { getStats };
+const getTeacherDashboard = async (req, res) => {
+  try {
+    const teacherId = req.user.entity_id;
+    const today = new Date().toISOString().slice(0, 10);
+    const dayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+
+    const [classes, periods, pendingHW, leaves] = await Promise.all([
+      // My assigned classes
+      pool.query(
+        `SELECT DISTINCT c.id, c.name, c.section, c.grade,
+                (SELECT COUNT(*)::int FROM students WHERE class_id=c.id AND status='active') AS student_count
+         FROM teacher_class_assignments tca
+         JOIN classes c ON c.id = tca.class_id
+         WHERE tca.teacher_id = $1`,
+        [teacherId]
+      ),
+      // Today's timetable periods
+      pool.query(
+        `SELECT tt.period_number, tt.start_time, tt.end_time,
+                s.name AS subject_name,
+                c.name AS class_name, c.section
+         FROM timetable tt
+         JOIN subjects s   ON s.id = tt.subject_id
+         JOIN classes  c   ON c.id = tt.class_id
+         JOIN teacher_class_assignments tca ON tca.class_id = tt.class_id AND tca.teacher_id = $1
+         WHERE tt.day_of_week = $2
+         ORDER BY tt.period_number`,
+        [teacherId, dayName]
+      ),
+      // Pending homework assignments
+      pool.query(
+        `SELECT COUNT(*)::int AS cnt FROM homework WHERE teacher_id=$1 AND due_date >= $2`,
+        [teacherId, today]
+      ),
+      // My pending leave applications
+      pool.query(
+        `SELECT COUNT(*)::int AS cnt FROM teacher_leaves WHERE teacher_id=$1 AND status='pending'`,
+        [teacherId]
+      ),
+    ]);
+
+    const totalStudents = classes.rows.reduce((s, c) => s + (c.student_count || 0), 0);
+
+    res.json({
+      success: true,
+      data: {
+        myClasses:       classes.rows.length,
+        totalStudents,
+        pendingHomework: pendingHW.rows[0].cnt,
+        pendingLeaves:   leaves.rows[0].cnt,
+        todayPeriods:    periods.rows,
+        myClassList:     classes.rows,
+      },
+    });
+  } catch (err) {
+    log.error({ err: err.message }, 'Teacher dashboard error');
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const getStudentDashboard = async (req, res) => {
+  try {
+    const studentId = req.user.entity_id;
+    const today     = new Date().toISOString().slice(0, 10);
+    const thisMonth = today.slice(0, 7);
+    const dayName   = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+
+    // Get student + class info first
+    const { rows: [student] } = await pool.query(
+      `SELECT s.id, s.full_name, s.class_id,
+              c.name AS class_name, c.section, c.grade
+       FROM students s
+       LEFT JOIN classes c ON c.id = s.class_id
+       WHERE s.id = $1`,
+      [studentId]
+    );
+
+    if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
+
+    const [attendance, homework, exams, periods, announcements] = await Promise.all([
+      // Attendance this month
+      pool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE status IN ('present','late'))::int AS present,
+           COUNT(*)::int AS total
+         FROM attendance
+         WHERE entity_type='student' AND entity_id=$1 AND TO_CHAR(date,'YYYY-MM')=$2 AND period_id IS NULL`,
+        [studentId, thisMonth]
+      ),
+      // Pending homework
+      pool.query(
+        `SELECT COUNT(*)::int AS cnt FROM homework
+         WHERE class_id=$1 AND due_date >= $2 AND status='active'`,
+        [student.class_id, today]
+      ),
+      // Upcoming exams (next 30 days)
+      pool.query(
+        `SELECT COUNT(*)::int AS cnt FROM exams
+         WHERE class_id=$1 AND exam_date BETWEEN $2 AND $2::date + INTERVAL '30 days'`,
+        [student.class_id, today]
+      ),
+      // Today's timetable
+      student.class_id ? pool.query(
+        `SELECT tt.period_number, tt.start_time, tt.end_time, s.name AS subject_name
+         FROM timetable tt
+         JOIN subjects s ON s.id = tt.subject_id
+         WHERE tt.class_id=$1 AND tt.day_of_week=$2
+         ORDER BY tt.period_number`,
+        [student.class_id, dayName]
+      ) : Promise.resolve({ rows: [] }),
+      // Recent announcements
+      pool.query(
+        `SELECT id, title, created_at FROM announcements
+         WHERE target_audience IN ('all','students') OR target_audience IS NULL
+         ORDER BY created_at DESC LIMIT 5`
+      ),
+    ]);
+
+    const att = attendance.rows[0];
+    const attPct = att.total > 0 ? Math.round((att.present / att.total) * 100) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        className:           `${student.class_name || ''}${student.section ? ' ' + student.section : ''}`.trim(),
+        attendancePercent:   attPct,
+        attendancePresent:   att.present,
+        attendanceTotal:     att.total,
+        pendingHomework:     homework.rows[0].cnt,
+        upcomingExams:       exams.rows[0].cnt,
+        todayPeriods:        periods.rows,
+        recentAnnouncements: announcements.rows,
+      },
+    });
+  } catch (err) {
+    log.error({ err: err.message }, 'Student dashboard error');
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const getParentDashboard = async (req, res) => {
+  try {
+    const parentId  = req.user.entity_id;
+    const thisMonth = new Date().toISOString().slice(0, 7);
+
+    // Get parent's child (first linked student)
+    const { rows: [parent] } = await pool.query(
+      `SELECT p.id, p.student_id, s.full_name AS child_name,
+              s.class_id, c.name AS class_name, c.section, c.grade
+       FROM parents p
+       JOIN students s ON s.id = p.student_id
+       LEFT JOIN classes c ON c.id = s.class_id
+       WHERE p.id = $1`,
+      [parentId]
+    );
+
+    if (!parent) return res.json({ success: true, data: {} });
+
+    const [attendance, fees, announcements] = await Promise.all([
+      // Attendance this month
+      pool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE status IN ('present','late'))::int AS present,
+           COUNT(*)::int AS total
+         FROM attendance
+         WHERE entity_type='student' AND entity_id=$1 AND TO_CHAR(date,'YYYY-MM')=$2 AND period_id IS NULL`,
+        [parent.student_id, thisMonth]
+      ),
+      // Outstanding fees
+      pool.query(
+        `SELECT COALESCE(SUM(total_amount + fine_amount - discount_amount - paid_amount), 0)::numeric AS outstanding
+         FROM fee_invoices
+         WHERE student_id=$1 AND status NOT IN ('paid','cancelled')`,
+        [parent.student_id]
+      ),
+      // Recent announcements for parents
+      pool.query(
+        `SELECT id, title, created_at FROM announcements
+         WHERE target_audience IN ('all','parents') OR target_audience IS NULL
+         ORDER BY created_at DESC LIMIT 5`
+      ),
+    ]);
+
+    const att = attendance.rows[0];
+    const attPct = att.total > 0 ? Math.round((att.present / att.total) * 100) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        childName:           parent.child_name,
+        className:           `${parent.class_name || ''}${parent.section ? ' ' + parent.section : ''}`.trim(),
+        attendancePercent:   attPct,
+        pendingFees:         parseFloat(fees.rows[0].outstanding || 0),
+        recentAnnouncements: announcements.rows,
+      },
+    });
+  } catch (err) {
+    log.error({ err: err.message }, 'Parent dashboard error');
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = { getStats, getTeacherDashboard, getStudentDashboard, getParentDashboard };

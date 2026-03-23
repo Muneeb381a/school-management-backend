@@ -3,7 +3,7 @@ const router  = express.Router();
 const {
   getSalaryStructures, getTeacherSalaryStructure, upsertSalaryStructure,
   getSalaryPayments, generateMonthlySalaries, updateSalaryPayment, markSalaryPaid, getSalarySlip,
-  bulkMarkSalaryPaid, exportSalary,
+  bulkMarkSalaryPaid, exportSalary, getMySlips,
 } = require('../controllers/salaryController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
@@ -23,6 +23,7 @@ router.post('/structures',           requireRole('admin'),            upsertSala
 router.get('/payments',                  requireRole('admin'),            getSalaryPayments);
 router.post('/payments/generate',        requireRole('admin'),            generateMonthlySalaries);
 router.post('/payments/bulk-mark-paid',  requireRole('admin'),            bulkMarkSalaryPaid);
+router.get('/payments/my',               requireRole('teacher'),          getMySlips);
 router.get('/payments/:id',              requireRole('admin', 'teacher'), getSalarySlip);   // own slip
 router.put('/payments/:id',              requireRole('admin'),            updateSalaryPayment);
 router.post('/payments/:id/mark-paid',   requireRole('admin'),            markSalaryPaid);

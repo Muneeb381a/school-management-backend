@@ -113,7 +113,15 @@ const generateMonthlySalaries = async (req, res) => {
     const absenceMap = {};
     absenceRows.forEach(r => { absenceMap[r.teacher_id] = r.absent_days; });
 
-    const inserts = [];
+    // Build arrays for batch UNNEST insert (1 round-trip instead of N)
+    const cols = {
+      teacherIds: [], months: [],
+      baseSalaries: [], houseAllowances: [], medAllowances: [],
+      transportAllowances: [], otherAllowances: [], grossSalaries: [],
+      incomeTaxes: [], otherDeductions: [], absentDaysArr: [],
+      attDeductions: [], totalDeductions: [], netSalaries: [],
+    };
+
     for (const t of teachers) {
       const base  = parseFloat(t.base_salary        || 0);
       const house = parseFloat(t.house_allowance     || 0);
@@ -124,28 +132,57 @@ const generateMonthlySalaries = async (req, res) => {
       const tax   = parseFloat(t.income_tax          || 0);
       const otDed = parseFloat(t.other_deduction     || 0);
 
-      // Attendance deduction: absent days × per-day rate (base / 26 working days)
-      const absentDays   = absenceMap[t.id] || 0;
-      const perDayRate   = base > 0 ? parseFloat((base / 26).toFixed(2)) : 0;
-      const attDed       = parseFloat((absentDays * perDayRate).toFixed(2));
+      const absentDays = absenceMap[t.id] || 0;
+      const perDayRate = base > 0 ? parseFloat((base / 26).toFixed(2)) : 0;
+      const attDed     = parseFloat((absentDays * perDayRate).toFixed(2));
+      const totalDed   = tax + otDed + attDed;
+      const net        = gross - totalDed;
 
-      const totalDed = tax + otDed + attDed;
-      const net      = gross - totalDed;
+      cols.teacherIds.push(t.id);
+      cols.months.push(`${month}-01`);
+      cols.baseSalaries.push(base);
+      cols.houseAllowances.push(house);
+      cols.medAllowances.push(med);
+      cols.transportAllowances.push(trns);
+      cols.otherAllowances.push(other);
+      cols.grossSalaries.push(gross);
+      cols.incomeTaxes.push(tax);
+      cols.otherDeductions.push(otDed);
+      cols.absentDaysArr.push(absentDays);
+      cols.attDeductions.push(attDed);
+      cols.totalDeductions.push(totalDed);
+      cols.netSalaries.push(net);
+    }
 
-      inserts.push(pool.query(`
+    let generated = 0;
+    if (cols.teacherIds.length > 0) {
+      const { rowCount } = await pool.query(`
         INSERT INTO salary_payments
           (teacher_id, month, base_salary, house_allowance, medical_allowance,
            transport_allowance, other_allowance, gross_salary,
            income_tax, other_deduction, absent_days, attendance_deduction,
            total_deductions, net_salary)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        SELECT * FROM UNNEST(
+          $1::int[], $2::date[], $3::numeric[], $4::numeric[], $5::numeric[],
+          $6::numeric[], $7::numeric[], $8::numeric[],
+          $9::numeric[], $10::numeric[], $11::int[], $12::numeric[],
+          $13::numeric[], $14::numeric[]
+        ) AS t(teacher_id, month, base_salary, house_allowance, medical_allowance,
+               transport_allowance, other_allowance, gross_salary,
+               income_tax, other_deduction, absent_days, attendance_deduction,
+               total_deductions, net_salary)
         ON CONFLICT (teacher_id, month) DO NOTHING
-      `, [t.id, month, base, house, med, trns, other, gross,
-          tax, otDed, absentDays, attDed, totalDed, net]));
+      `, [
+        cols.teacherIds, cols.months,
+        cols.baseSalaries, cols.houseAllowances, cols.medAllowances,
+        cols.transportAllowances, cols.otherAllowances, cols.grossSalaries,
+        cols.incomeTaxes, cols.otherDeductions, cols.absentDaysArr,
+        cols.attDeductions, cols.totalDeductions, cols.netSalaries,
+      ]);
+      generated = rowCount;
     }
-    await Promise.all(inserts);
 
-    res.json({ success: true, generated: inserts.length, message: `Salary slips generated for ${inserts.length} teacher(s) — ${month}` });
+    res.json({ success: true, generated, message: `Salary slips generated for ${generated} teacher(s) — ${month}` });
   } catch (err) { serverErr(res, err); }
 };
 
@@ -289,8 +326,26 @@ const exportSalary = async (req, res, next) => {
   }
 };
 
+const getMySlips = async (req, res) => {
+  try {
+    const teacherId = req.user.entity_id;
+    const { rows } = await pool.query(
+      `SELECT sp.*, t.full_name AS teacher_name
+       FROM salary_payments sp
+       JOIN teachers t ON t.id = sp.teacher_id
+       WHERE sp.teacher_id = $1
+       ORDER BY sp.month DESC
+       LIMIT 12`,
+      [teacherId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 module.exports = {
   getSalaryStructures, getTeacherSalaryStructure, upsertSalaryStructure,
   getSalaryPayments, generateMonthlySalaries, updateSalaryPayment, markSalaryPaid, getSalarySlip,
-  bulkMarkSalaryPaid, exportSalary,
+  bulkMarkSalaryPaid, exportSalary, getMySlips,
 };

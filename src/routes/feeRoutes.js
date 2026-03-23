@@ -16,6 +16,7 @@ const {
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
 const { csvUpload }       = require('../middleware/upload');
+const { recordPaymentValidator, createInvoiceValidator } = require('../middleware/validate');
 
 router.use(auditMiddleware('fee'));
 
@@ -46,7 +47,7 @@ router.post('/invoices/apply-late-fees',               requireRole('admin'), app
 router.get('/invoices/:id/print',                      requireRole('admin', 'teacher'), getInvoicePrint);
 router.get('/invoices/:id/challan',                    requireRole('admin', 'teacher'), getChallanPrint);
 router.get('/invoices',                                requireRole('admin', 'teacher'), getInvoices);
-router.post('/invoices',                               requireRole('admin'),            createInvoice);
+router.post('/invoices',                               requireRole('admin'), createInvoiceValidator, createInvoice);
 router.get('/invoices/:id',                            requireRole('admin', 'teacher'), getInvoice);
 router.put('/invoices/:id',                            requireRole('admin'),            updateInvoice);
 router.delete('/invoices/:id',                         requireRole('admin'),            cancelInvoice);
@@ -59,7 +60,7 @@ router.post('/payments/import',         requireRole('admin'), csvUpload.single('
 router.post('/payments/bulk',          requireRole('admin'),            bulkRecordPayments);
 router.get('/payments/:id/receipt',    requireRole('admin', 'teacher'), getReceiptPrint);
 router.get('/payments',                requireRole('admin', 'teacher'), getPayments);
-router.post('/payments',               requireRole('admin'),            recordPayment);
+router.post('/payments',               requireRole('admin'), recordPaymentValidator, recordPayment);
 router.delete('/payments/:id',         requireRole('admin'),            voidPayment);
 
 // Reports

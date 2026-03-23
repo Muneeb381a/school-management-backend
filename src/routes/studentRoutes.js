@@ -7,6 +7,7 @@ const {
   promoteStudents,
   uploadPhoto, listDocuments, uploadDocument, deleteDocument, resetCredentials,
   getImportTemplate, importStudents, exportStudents,
+  getStudentCredentials,
 } = require('../controllers/studentController');
 
 const { photoUpload, docUpload, csvUpload } = require('../middleware/upload');
@@ -43,7 +44,8 @@ router.get('/:id/documents',           requireRole('admin', 'teacher'),         
 router.post('/:id/documents',          requireRole('admin'), docUpload.single('file'),    uploadDocument);
 router.delete('/:id/documents/:docId', requireRole('admin'),                              deleteDocument);
 
-// Credentials reset
+// Credentials
+router.get('/:id/credentials',         requireRole('admin'), getStudentCredentials);
 router.post('/:id/reset-credentials',  requireRole('admin'), resetCredentials);
 
 module.exports = router;

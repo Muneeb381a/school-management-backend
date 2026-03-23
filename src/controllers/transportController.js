@@ -19,6 +19,7 @@ const getBuses = async (req, res) => {
     const { rows } = await pool.query(
       `SELECT
          b.*,
+         r.id   AS assigned_route_id,
          r.route_name,
          bra.academic_year AS assigned_year,
          COUNT(st.id)::INT AS assigned_students
@@ -30,7 +31,7 @@ const getBuses = async (req, res) => {
          ON st.bus_id = b.id AND st.status = 'active'
          AND st.academic_year = bra.academic_year
        ${where}
-       GROUP BY b.id, r.route_name, bra.academic_year
+       GROUP BY b.id, r.id, r.route_name, bra.academic_year
        ORDER BY b.bus_number`,
       vals
     );
@@ -374,14 +375,15 @@ const deleteStop = async (req, res) => {
 // Query: route_id, bus_id, academic_year, status, search
 const getAssignments = async (req, res) => {
   try {
-    const { route_id, bus_id, academic_year = '2024-25', status, search } = req.query;
+    const { route_id, bus_id, student_id, academic_year = '2024-25', status, search } = req.query;
     const conditions = ['st.academic_year = $1'];
     const values = [academic_year];
     const push = (v) => { values.push(v); return `$${values.length}`; };
 
-    if (route_id) conditions.push(`st.route_id = ${push(Number(route_id))}`);
-    if (bus_id)   conditions.push(`st.bus_id = ${push(Number(bus_id))}`);
-    if (status)   conditions.push(`st.status = ${push(status)}`);
+    if (route_id)   conditions.push(`st.route_id = ${push(Number(route_id))}`);
+    if (bus_id)     conditions.push(`st.bus_id = ${push(Number(bus_id))}`);
+    if (student_id) conditions.push(`st.student_id = ${push(Number(student_id))}`);
+    if (status)     conditions.push(`st.status = ${push(status)}`);
     if (search)   conditions.push(
       `(s.first_name ILIKE ${push(`%${search}%`)} OR s.last_name ILIKE $${values.length} OR s.roll_number ILIKE $${values.length})`
     );

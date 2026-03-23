@@ -31,9 +31,13 @@ pool.query = function slowQueryLogger(text, params, callback) {
   const handleResult = (err, result) => {
     const duration = Date.now() - start;
     if (duration >= SLOW_MS) {
-      console.warn(
-        `[slow-query] ${duration}ms — ${queryText.replace(/\s+/g, ' ').slice(0, 120)}`
-      );
+      // Use Pino logger if available, fall back to console.warn
+      try {
+        const { slowQueryLogger: logSlowQuery } = require('../utils/logger');
+        logSlowQuery(queryText.replace(/\s+/g, ' ').slice(0, 200), duration, SLOW_MS);
+      } catch {
+        console.warn(`[slow-query] ${duration}ms — ${queryText.replace(/\s+/g, ' ').slice(0, 120)}`);
+      }
     }
     if (typeof callback === 'function') callback(err, result);
   };
@@ -50,11 +54,19 @@ pool.query = function slowQueryLogger(text, params, callback) {
 };
 
 pool.on('connect', () => {
-  console.log('Connected to PostgreSQL database');
+  try {
+    require('../utils/logger').info('Connected to PostgreSQL database');
+  } catch {
+    console.log('Connected to PostgreSQL database');
+  }
 });
 
 pool.on('error', (err) => {
-  console.error('Unexpected database error:', err);
+  try {
+    require('../utils/logger').error({ err: err.message }, 'Unexpected database error');
+  } catch {
+    console.error('Unexpected database error:', err);
+  }
 });
 
 module.exports = pool;

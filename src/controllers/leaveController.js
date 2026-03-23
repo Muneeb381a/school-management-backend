@@ -98,7 +98,22 @@ const applyLeave = async (req, res) => {
     );
 
     const { rows: full } = await pool.query(`${BASE_SELECT} WHERE tl.id = $1`, [rows[0].id]);
-    res.status(201).json({ success: true, data: full[0], message: 'Leave application submitted' });
+    const leave = full[0];
+
+    // Insert admin notification — non-blocking, failure must not break the response
+    const fmtD = (d) => d ? new Date(d).toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+    pool.query(
+      `INSERT INTO notifications (type, title, message, link, ref_key, user_id)
+       VALUES ('leave_request', $1, $2, '/leaves', $3, NULL)
+       ON CONFLICT (ref_key) DO NOTHING`,
+      [
+        `Leave Request — ${leave.teacher_name}`,
+        `${leave.teacher_name} applied for ${leave.leave_type_name} (${leave.total_days} day${leave.total_days !== 1 ? 's' : ''}) from ${fmtD(leave.from_date)} to ${fmtD(leave.to_date)}.`,
+        `leave_request_${rows[0].id}`,
+      ]
+    ).catch(() => {}); // fire-and-forget
+
+    res.status(201).json({ success: true, data: leave, message: 'Leave application submitted' });
   } catch (err) { serverErr(res, err); }
 };
 

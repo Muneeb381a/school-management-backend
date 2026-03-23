@@ -165,9 +165,17 @@ const getInvoices = async (req, res) => {
       p.push(`%${search}%`);
       q += ` AND (s.full_name ILIKE $${p.length} OR fi.invoice_no ILIKE $${p.length} OR s.roll_number ILIKE $${p.length})`;
     }
+    // Count query (same WHERE, no ORDER/LIMIT)
+    const countQ = q.replace(
+      /SELECT[\s\S]+?FROM fee_invoices/,
+      'SELECT COUNT(*) AS total FROM fee_invoices'
+    );
+    const { rows: countRows } = await pool.query(countQ, p);
+    const totalCount = parseInt(countRows[0]?.total || 0, 10);
+
     q += ` ORDER BY fi.created_at DESC LIMIT $${p.push(limit)} OFFSET $${p.push(offset)}`;
     const { rows } = await pool.query(q, p);
-    res.json({ success: true, data: rows, total: rows.length });
+    res.json({ success: true, data: rows, total: totalCount, limit: parseInt(limit, 10), offset: parseInt(offset, 10) });
   } catch (err) { serverErr(res, err); }
 };
 
@@ -266,7 +274,7 @@ const createInvoice = async (req, res) => {
 
 // POST /api/fees/invoices/generate-monthly
 const generateMonthlyFees = async (req, res) => {
-  const { class_id, billing_month, academic_year, due_date } = req.body;
+  const { class_id, billing_month, academic_year, due_date, student_id } = req.body;
   if (!billing_month) return res.status(400).json({ success: false, message: 'billing_month (YYYY-MM) required' });
 
   const client = await pool.connect();
@@ -275,12 +283,15 @@ const generateMonthlyFees = async (req, res) => {
     const year = academic_year || '2024-25';
 
     const { rows: students } = await client.query(
-      class_id
+      student_id
         ? `SELECT id, class_id, full_name, transport_required, hostel_required
-           FROM students WHERE status='active' AND class_id=$1`
-        : `SELECT id, class_id, full_name, transport_required, hostel_required
-           FROM students WHERE status='active' AND class_id IS NOT NULL`,
-      class_id ? [class_id] : []
+           FROM students WHERE status='active' AND id=$1`
+        : class_id
+          ? `SELECT id, class_id, full_name, transport_required, hostel_required
+             FROM students WHERE status='active' AND class_id=$1`
+          : `SELECT id, class_id, full_name, transport_required, hostel_required
+             FROM students WHERE status='active' AND class_id IS NOT NULL`,
+      student_id ? [student_id] : class_id ? [class_id] : []
     );
 
     if (students.length === 0) {
@@ -708,30 +719,81 @@ const getOutstandingBalances = async (req, res) => {
 // GET /api/fees/reports/student/:id
 const getStudentFeeHistory = async (req, res) => {
   try {
-    const { rows: invoices } = await pool.query(
-      `SELECT fi.*,
-         (fi.total_amount + fi.fine_amount - fi.discount_amount)                  AS net_amount,
-         (fi.total_amount + fi.fine_amount - fi.discount_amount - fi.paid_amount) AS balance,
-         c.name AS class_name
-       FROM fee_invoices fi
-       LEFT JOIN classes c ON c.id = fi.class_id
-       WHERE fi.student_id = $1 AND fi.status != 'cancelled'
-       ORDER BY fi.created_at DESC`,
-      [req.params.id]
-    );
-    const { rows: payments } = await pool.query(
-      `SELECT fp.*, fi.invoice_no FROM fee_payments fp
-       JOIN fee_invoices fi ON fi.id = fp.invoice_id
-       WHERE fp.student_id=$1 AND fp.is_void=FALSE ORDER BY fp.payment_date DESC`,
-      [req.params.id]
-    );
+    const sid = req.params.id;
+
+    const [invRes, payRes, studentRes, concessionsRes, itemsRes] = await Promise.all([
+      pool.query(
+        `SELECT fi.*,
+           (fi.total_amount + fi.fine_amount - fi.discount_amount)                  AS net_amount,
+           (fi.total_amount + fi.fine_amount - fi.discount_amount - fi.paid_amount) AS balance,
+           c.name AS class_name
+         FROM fee_invoices fi
+         LEFT JOIN classes c ON c.id = fi.class_id
+         WHERE fi.student_id = $1 AND fi.status != 'cancelled'
+         ORDER BY fi.billing_month DESC NULLS LAST, fi.created_at DESC`,
+        [sid]
+      ),
+      pool.query(
+        `SELECT fp.*, fi.invoice_no FROM fee_payments fp
+         JOIN fee_invoices fi ON fi.id = fp.invoice_id
+         WHERE fp.student_id=$1 AND fp.is_void=FALSE ORDER BY fp.payment_date DESC`,
+        [sid]
+      ),
+      pool.query(
+        `SELECT s.*, c.name AS class_name
+         FROM students s LEFT JOIN classes c ON c.id = s.class_id
+         WHERE s.id=$1`,
+        [sid]
+      ),
+      pool.query(
+        `SELECT sc.*, fh.name AS fee_head_name
+         FROM student_concessions sc
+         LEFT JOIN fee_heads fh ON fh.id = sc.fee_head_id
+         WHERE sc.student_id=$1 ORDER BY sc.id`,
+        [sid]
+      ),
+      pool.query(
+        `SELECT fii.*, fh.name AS fee_head_name
+         FROM fee_invoice_items fii
+         JOIN fee_invoices fi ON fi.id = fii.invoice_id
+         LEFT JOIN fee_heads fh ON fh.id = fii.fee_head_id
+         WHERE fi.student_id=$1
+         ORDER BY fii.invoice_id, fii.id`,
+        [sid]
+      ),
+    ]);
+
+    const invoices    = invRes.rows;
+    const payments    = payRes.rows;
+    const student     = studentRes.rows[0] || null;
+    const concessions = concessionsRes.rows;
+
+    // Attach items to each invoice
+    const itemsByInv = {};
+    itemsRes.rows.forEach(item => {
+      if (!itemsByInv[item.invoice_id]) itemsByInv[item.invoice_id] = [];
+      itemsByInv[item.invoice_id].push(item);
+    });
+
+    // Attach payments to each invoice
+    const paysByInv = {};
+    payments.forEach(p => {
+      if (!paysByInv[p.invoice_id]) paysByInv[p.invoice_id] = [];
+      paysByInv[p.invoice_id].push(p);
+    });
+
+    invoices.forEach(inv => {
+      inv.items    = itemsByInv[inv.id] || [];
+      inv.payments = paysByInv[inv.id]  || [];
+    });
+
     const totals = invoices.reduce((acc, r) => ({
       billed:    acc.billed    + parseFloat(r.net_amount || 0),
       collected: acc.collected + parseFloat(r.paid_amount || 0),
       balance:   acc.balance   + parseFloat(r.balance || 0),
     }), { billed: 0, collected: 0, balance: 0 });
 
-    res.json({ success: true, invoices, payments, totals });
+    res.json({ success: true, student, invoices, payments, totals, concessions });
   } catch (err) { serverErr(res, err); }
 };
 

@@ -21,9 +21,11 @@ const getTeachers = async (req, res) => {
     let query = `
       SELECT
         t.*,
+        MIN(u.id)                         AS user_id,
         COUNT(DISTINCT tc.class_id)::int  AS class_count,
         COUNT(DISTINCT s.id)::int         AS student_count
       FROM teachers t
+      LEFT JOIN users            u  ON u.entity_id = t.id AND u.role = 'teacher'
       LEFT JOIN teacher_classes tc ON tc.teacher_id = t.id
       LEFT JOIN classes          c  ON c.id = tc.class_id
       LEFT JOIN students         s  ON s.class_id = c.id
@@ -127,6 +129,7 @@ const getTeacherStudents = async (req, res) => {
 //  POST /api/teachers
 // ─────────────────────────────────────────────
 const createTeacher = async (req, res) => {
+  const client = await pool.connect();
   try {
     const {
       full_name, email, phone, gender, date_of_birth,
@@ -134,10 +137,13 @@ const createTeacher = async (req, res) => {
     } = req.body;
 
     if (!full_name?.trim()) {
+      client.release();
       return res.status(400).json({ success: false, message: 'Full name is required' });
     }
 
-    const { rows } = await pool.query(
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
       `INSERT INTO teachers
          (full_name, email, phone, gender, date_of_birth,
           qualification, subject, join_date, status, address, assigned_grades)
@@ -157,13 +163,122 @@ const createTeacher = async (req, res) => {
         assigned_grades?.length ? assigned_grades : null,
       ]
     );
-    res.status(201).json({ success: true, data: rows[0], message: 'Teacher added successfully' });
+    const teacher  = rows[0];
+    const base     = (teacher.full_name || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 5).padEnd(3, 'x');
+    const username = `tch_${base}${teacher.id}`;
+    const rawPw    = `Tch@${teacher.id}`;
+    const hashed   = await bcrypt.hash(rawPw, 10);
+    await client.query(
+      `INSERT INTO users (username, password, role, name, entity_id, must_change_password)
+       VALUES ($1,$2,'teacher',$3,$4,TRUE)
+       ON CONFLICT (username) DO NOTHING`,
+      [username, hashed, teacher.full_name, teacher.id]
+    );
+    await client.query('COMMIT');
+
+    // Try email delivery — non-blocking
+    let emailSent = false;
+    if (email) {
+      try {
+        const sendMail = require('../utils/mailer').sendMail;
+        await sendMail({
+          to:      email,
+          subject: 'Your School Portal Login Credentials',
+          html:    `<p>Dear ${teacher.full_name},</p>
+                    <p>Your teacher portal credentials have been created:</p>
+                    <ul>
+                      <li><strong>Username:</strong> ${username}</li>
+                      <li><strong>Temporary Password:</strong> ${rawPw}</li>
+                    </ul>
+                    <p>Please log in and change your password immediately.</p>`,
+        });
+        emailSent = true;
+      } catch { /* email failure is non-blocking */ }
+    }
+
+    res.status(201).json({
+      success: true,
+      data: teacher,
+      credentials: emailSent
+        ? { username, emailSent: true, note: `Credentials emailed to ${email}` }
+        : { username, tempPassword: rawPw, note: 'No email on file — share this password directly. It will not be shown again.' },
+      message: 'Teacher added successfully',
+    });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     if (err.code === '23505') {
       return res.status(409).json({ success: false, message: 'A teacher with this email already exists' });
     }
     serverErr(res, err);
-  }
+  } finally { client.release(); }
+};
+
+// ─────────────────────────────────────────────
+//  POST /api/teachers/:id/reset-credentials
+// ─────────────────────────────────────────────
+const resetTeacherCredentials = async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, full_name, email FROM teachers WHERE id=$1 AND deleted_at IS NULL',
+      [req.params.id]
+    );
+    if (!rows[0]) return notFound(res);
+    const teacher  = rows[0];
+    const base     = (teacher.full_name || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 5).padEnd(3, 'x');
+    const username = `tch_${base}${teacher.id}`;
+    const rawPw    = `Tch@${teacher.id}`;
+    const hashed   = await bcrypt.hash(rawPw, 10);
+    await pool.query(
+      `INSERT INTO users (username, password, role, name, entity_id, must_change_password)
+       VALUES ($1,$2,'teacher',$3,$4,TRUE)
+       ON CONFLICT (username) DO UPDATE SET password=$2, must_change_password=TRUE`,
+      [username, hashed, teacher.full_name, teacher.id]
+    );
+
+    let emailSent = false;
+    if (teacher.email) {
+      try {
+        const sendMail = require('../utils/mailer').sendMail;
+        await sendMail({
+          to:      teacher.email,
+          subject: 'Your School Portal Password Has Been Reset',
+          html:    `<p>Dear ${teacher.full_name},</p>
+                    <p>Your teacher portal password has been reset:</p>
+                    <ul>
+                      <li><strong>Username:</strong> ${username}</li>
+                      <li><strong>New Password:</strong> ${rawPw}</li>
+                    </ul>
+                    <p>Please log in and change your password immediately.</p>`,
+        });
+        emailSent = true;
+      } catch { /* non-blocking */ }
+    }
+
+    res.json({
+      success: true,
+      credentials: emailSent
+        ? { username, emailSent: true, note: `New password emailed to ${teacher.email}` }
+        : { username, tempPassword: rawPw, note: 'No email on file — share this password directly. It will not be shown again.' },
+    });
+  } catch (err) { serverErr(res, err); }
+};
+
+// ─────────────────────────────────────────────
+//  GET /api/teachers/:id/credentials
+//  Returns just the username (password never stored in plain text)
+// ─────────────────────────────────────────────
+const getTeacherCredentials = async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.username, u.must_change_password, u.is_active, u.last_login_at
+       FROM users u
+       JOIN teachers t ON t.id = u.entity_id
+       WHERE u.role='teacher' AND t.id=$1 AND t.deleted_at IS NULL`,
+      [req.params.id]
+    );
+    if (!rows[0]) return res.json({ success: true, data: null });
+    res.json({ success: true, data: rows[0] });
+  } catch (err) { serverErr(res, err); }
 };
 
 // ─────────────────────────────────────────────
@@ -499,4 +614,5 @@ module.exports = {
   assignTeacherToClass, removeTeacherFromClass,
   uploadPhoto, listDocuments, uploadDocument, deleteDocument,
   getImportTemplate, importTeachers, exportTeachers,
+  resetTeacherCredentials, getTeacherCredentials,
 };

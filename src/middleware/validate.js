@@ -178,6 +178,25 @@ const createTeacherValidator = validate([
   { field: 'phone',     required: false, type: 'phone',                      label: 'Phone' },
 ]);
 
+// A7: financial amount validators
+const recordPaymentValidator = validate([
+  { field: 'invoice_id',      required: true,  type: 'integer', min: 1,    label: 'Invoice' },
+  { field: 'amount',          required: true,  type: 'number',  min: 0.01, label: 'Amount' },
+  { field: 'payment_method',  required: false, type: 'string',             label: 'Payment method' },
+]);
+
+const createExpenseValidator = validate([
+  { field: 'amount',          required: true,  type: 'number',  min: 0.01, label: 'Amount' },
+  { field: 'description',     required: true,  type: 'string',  min: 2,    label: 'Description' },
+  { field: 'expense_date',    required: true,  type: 'date',               label: 'Expense date' },
+]);
+
+const createInvoiceValidator = validate([
+  { field: 'student_id',      required: true,  type: 'integer', min: 1,    label: 'Student' },
+  { field: 'total_amount',    required: true,  type: 'number',  min: 0,    label: 'Total amount' },
+  { field: 'due_date',        required: true,  type: 'date',               label: 'Due date' },
+]);
+
 module.exports = {
   validate,
   loginValidator,
@@ -185,4 +204,7 @@ module.exports = {
   changePasswordValidator,
   createStudentValidator,
   createTeacherValidator,
+  recordPaymentValidator,
+  createExpenseValidator,
+  createInvoiceValidator,
 };

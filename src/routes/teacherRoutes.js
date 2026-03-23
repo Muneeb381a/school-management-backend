@@ -7,6 +7,7 @@ const {
   assignTeacherToClass, removeTeacherFromClass,
   uploadPhoto, listDocuments, uploadDocument, deleteDocument,
   getImportTemplate, importTeachers, exportTeachers,
+  resetTeacherCredentials, getTeacherCredentials,
 } = require('../controllers/teacherController');
 const { photoUpload, docUpload, csvUpload } = require('../middleware/upload');
 const { requireRole }             = require('../middleware/authMiddleware');
@@ -33,6 +34,8 @@ router.get('/:id/classes',             requireRole('admin', 'teacher'), getTeach
 router.post('/:id/classes',            requireRole('admin'),            assignTeacherToClass);
 router.delete('/:id/classes/:classId', requireRole('admin'),            removeTeacherFromClass);
 router.get('/:id/students',            requireRole('admin', 'teacher'), getTeacherStudents);
+router.get('/:id/credentials',         requireRole('admin'),            getTeacherCredentials);
+router.post('/:id/reset-credentials',  requireRole('admin'),            resetTeacherCredentials);
 
 router.get('/:id',    requireRole('admin', 'teacher'), getTeacher);
 router.put('/:id',    requireRole('admin'),            updateTeacher);

@@ -10,11 +10,23 @@ const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const compression = require('compression');
 const morgan      = require('morgan');
 
+// ── Structured logging (Pino) ─────────────────────────────────────────────────
+const logger = require('./utils/logger');
+const { requestLogger } = require('./utils/logger');
+
+// ── Swagger docs ──────────────────────────────────────────────────────────────
+const swaggerUi = require('swagger-ui-express');
+const { swaggerSpec, swaggerUiOptions } = require('./config/swagger');
+
 const { verifyToken, requireRole }   = require('./middleware/authMiddleware');
 const errorHandler                   = require('./middleware/errorHandler');
 const { getAuditLogs }               = require('./middleware/auditLog');
 const requestId                      = require('./middleware/requestId');
 const { startScheduler }             = require('./utils/scheduler');
+const { getQueue, work, stop: stopQueue } = require('./jobs/queue');
+const { processStudentImport }       = require('./jobs/processors/csvImportProcessor');
+const { processBulkEmail }           = require('./jobs/processors/emailProcessor');
+const jobRoutes                      = require('./routes/jobRoutes');
 
 const studentRoutes      = require('./routes/studentRoutes');
 const classRoutes        = require('./routes/classRoutes');
@@ -45,6 +57,17 @@ const searchRoutes       = require('./routes/searchRoutes');
 const leaveRoutes        = require('./routes/leaveRoutes');
 const syllabusRoutes     = require('./routes/syllabusRoutes');
 const analyticsRoutes    = require('./routes/analyticsRoutes');
+const lateArrivalRoutes       = require('./routes/lateArrivalRoutes');
+const homeworkSubmissionRoutes = require('./routes/homeworkSubmissionRoutes');
+const medicalRoutes           = require('./routes/medicalRoutes');
+const canteenRoutes           = require('./routes/canteenRoutes');
+const meetingRoutes           = require('./routes/meetingRoutes');
+const scholarshipRoutes       = require('./routes/scholarshipRoutes');
+const alumniRoutes            = require('./routes/alumniRoutes');
+const rolloverRoutes          = require('./routes/rolloverRoutes');
+const quizRoutes              = require('./routes/quizRoutes');
+const pushRoutes              = require('./routes/pushRoutes');
+const paperRoutes             = require('./routes/paperRoutes');
 
 const app = express();
 
@@ -57,11 +80,16 @@ app.use(requestId);
 // ── 2. Response compression — gzip all JSON/text responses ───────────────────
 app.use(compression());
 
-// ── 3. HTTP logger — skip health-check noise in production ───────────────────
-const morganFormat = process.env.NODE_ENV === 'production' ? 'combined' : 'dev';
-app.use(morgan(morganFormat, {
-  skip: (req) => req.path === '/api/health',
-}));
+// ── 3. HTTP request logger — Pino structured + Morgan fallback ───────────────
+// Pino requestLogger for structured JSON in production; skip health-check pings
+app.use((req, res, next) => {
+  if (req.path === '/api/health' || req.path === '/api/health/live') return next();
+  return requestLogger(req, res, next);
+});
+// Keep Morgan for development console readability (only in dev)
+if (process.env.NODE_ENV !== 'production') {
+  app.use(morgan('dev', { skip: (req) => req.path === '/api/health' }));
+}
 
 // ── 4. Security headers ───────────────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
@@ -133,6 +161,13 @@ const exportLimiter = rateLimit({
 app.use('/api/', apiLimiter);
 app.use('/api/v1/', apiLimiter);
 
+// ── 8a. Swagger API docs (admin-only in production) ───────────────────────────
+// Available at /api/docs and /api/v1/docs
+// In production, protect behind verifyToken + requireRole — but serve spec publicly for tools
+app.get('/api/docs/spec.json', (_req, res) => res.json(swaggerSpec));
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
+app.use('/api/v1/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
+
 // ── 8. Health check v2 ────────────────────────────────────────────────────────
 app.get('/api/health', async (_req, res) => {
   const pool = require('./db');
@@ -156,6 +191,18 @@ app.get('/api/health', async (_req, res) => {
       error:     err.message,
       timestamp: new Date().toISOString(),
     });
+  }
+});
+
+// Kubernetes-style liveness (instant 200) and readiness (DB ping) probes
+app.get('/api/health/live',  (_req, res) => res.json({ status: 'ok' }));
+app.get('/api/health/ready', async (_req, res) => {
+  try {
+    const pool = require('./db');
+    await pool.query('SELECT 1');
+    res.json({ status: 'ready' });
+  } catch {
+    res.status(503).json({ status: 'not ready' });
   }
 });
 
@@ -212,6 +259,18 @@ const routeMap = [
   ['/leaves',        leaveRoutes],
   ['/syllabus',      syllabusRoutes],
   ['/analytics',     analyticsRoutes],
+  ['/late-arrivals',        lateArrivalRoutes],
+  ['/homework-submissions', homeworkSubmissionRoutes],
+  ['/medical',              medicalRoutes],
+  ['/canteen',              canteenRoutes],
+  ['/meetings',             meetingRoutes],
+  ['/scholarships',         scholarshipRoutes],
+  ['/alumni',               alumniRoutes],
+  ['/rollover',             rolloverRoutes],
+  ['/quizzes',              quizRoutes],
+  ['/jobs',                 jobRoutes],
+  ['/push',                 pushRoutes],
+  ['/papers',               paperRoutes],
 ];
 
 for (const [path, router] of routeMap) {
@@ -227,31 +286,41 @@ app.get('/api/v1/audit-logs', requireRole('admin'), getAuditLogs);
 app.use((_req, res) => res.status(404).json({ success: false, message: 'Route not found.' }));
 app.use(errorHandler);
 
-// ── 13. Start server + background scheduler ───────────────────────────────────
+// ── 13. Start server + background scheduler + job queue ───────────────────────
 const PORT = process.env.PORT || 5000;
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀  Server running at http://localhost:${PORT}`);
+const server = app.listen(PORT, '0.0.0.0', async () => {
+  logger.info({ port: PORT }, `🚀  Server running at http://localhost:${PORT}`);
   startScheduler();
+
+  // Initialize pg-boss job queue and register workers
+  try {
+    await getQueue();
+    await work('csv-import-students', processStudentImport);
+    await work('bulk-email', processBulkEmail);
+  } catch (err) {
+    logger.warn({ err: err.message }, '[queue] Failed to start job queue — continuing without it');
+  }
 });
 
 // ── 14. Graceful shutdown ─────────────────────────────────────────────────────
 const shutdown = (signal) => {
-  console.log(`\n[${signal}] Graceful shutdown initiated…`);
+  logger.info({ signal }, 'Graceful shutdown initiated…');
   server.close(async () => {
-    console.log('HTTP server closed.');
+    logger.info('HTTP server closed.');
+    try { await stopQueue(); } catch { /* best effort */ }
     try {
       const pool = require('./db');
       await pool.end();
-      console.log('DB pool closed.');
+      logger.info('DB pool closed.');
     } catch (err) {
-      console.error('Error closing DB pool:', err.message);
+      logger.error({ err: err.message }, 'Error closing DB pool');
     }
     process.exit(0);
   });
 
   // Force exit if it takes too long
   setTimeout(() => {
-    console.error('Forced exit after 10 s timeout.');
+    logger.error('Forced exit after 10 s timeout.');
     process.exit(1);
   }, 10_000);
 };
@@ -261,5 +330,5 @@ process.on('SIGINT',  () => shutdown('SIGINT'));
 
 // Catch unhandled promise rejections — log and continue (don't crash)
 process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled promise rejection:', reason);
+  logger.error({ err: reason }, 'Unhandled promise rejection');
 });

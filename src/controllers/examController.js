@@ -17,6 +17,46 @@ function gradeFromPct(pct) {
 //  EXAMS — CRUD
 // ══════════════════════════════════════════════════════════════
 
+// ── Helper: check if exam results are locked ──────────────────────────────
+async function checkNotPublished(client, examId) {
+  const { rows } = await client.query(
+    'SELECT results_published_at FROM exams WHERE id=$1', [examId]
+  );
+  if (!rows[0]) throw Object.assign(new Error('Exam not found'), { code: 404 });
+  if (rows[0].results_published_at)
+    throw Object.assign(new Error('Results are published/locked. Unpublish first to make changes.'), { code: 403 });
+}
+
+// ── POST /api/exams/:examId/publish-results ──────────────────────────────
+const publishResults = async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE exams SET results_published_at = NOW()
+       WHERE id = $1 RETURNING id, results_published_at`,
+      [req.params.examId]
+    );
+    if (!rows[0]) return res.status(404).json({ success: false, message: 'Exam not found' });
+    res.json({ success: true, data: rows[0], message: 'Results published and locked' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ── DELETE /api/exams/:examId/publish-results ────────────────────────────
+const unpublishResults = async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE exams SET results_published_at = NULL
+       WHERE id = $1 RETURNING id, results_published_at`,
+      [req.params.examId]
+    );
+    if (!rows[0]) return res.status(404).json({ success: false, message: 'Exam not found' });
+    res.json({ success: true, data: rows[0], message: 'Results unpublished — marks can be edited again' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // GET /api/exams?academic_year=&status=
 const getExams = async (req, res) => {
   try {
@@ -227,6 +267,7 @@ const getMarks = async (req, res) => {
          sm.subject_id,
          sm.class_id,
          sm.obtained_marks,
+         sm.is_absent,
          sm.remarks,
          sm.created_at,
          st.full_name      AS student_name,
@@ -236,7 +277,9 @@ const getMarks = async (req, res) => {
          c.name            AS class_name,
          es.total_marks,
          es.passing_marks,
-         CASE WHEN sm.obtained_marks >= es.passing_marks THEN 'pass' ELSE 'fail' END AS subject_status
+         CASE WHEN sm.is_absent THEN 'absent'
+              WHEN sm.obtained_marks >= es.passing_marks THEN 'pass'
+              ELSE 'fail' END AS subject_status
        FROM student_marks sm
        JOIN students       st ON st.id = sm.student_id
        JOIN subjects       s  ON s.id  = sm.subject_id
@@ -265,30 +308,40 @@ const submitMarks = async (req, res) => {
       return res.status(400).json({ success: false, message: 'marks array is required' });
 
     await client.query('BEGIN');
+    try { await checkNotPublished(client, examId); }
+    catch (e) { await client.query('ROLLBACK'); return res.status(e.code || 400).json({ success: false, message: e.message }); }
     const saved = [];
     for (const m of marks) {
-      const { student_id, subject_id, class_id, obtained_marks, remarks = null } = m;
-      if (!student_id || !subject_id || !class_id || obtained_marks == null)
+      const { student_id, subject_id, class_id, remarks = null, is_absent = false } = m;
+      let { obtained_marks } = m;
+      if (!student_id || !subject_id || !class_id || (obtained_marks == null && !is_absent))
         throw new Error('student_id, subject_id, class_id, and obtained_marks are required for each mark');
 
-      // Validate obtained_marks does not exceed total_marks
-      const { rows: config } = await client.query(
-        `SELECT total_marks FROM exam_subjects
-         WHERE exam_id=$1 AND class_id=$2 AND subject_id=$3`,
-        [examId, class_id, subject_id]
-      );
-      if (!config[0])
-        throw new Error(`No exam subject configured for class_id=${class_id}, subject_id=${subject_id}`);
-      if (parseFloat(obtained_marks) > parseFloat(config[0].total_marks))
-        throw new Error(`obtained_marks (${obtained_marks}) exceeds total_marks (${config[0].total_marks}) for subject_id=${subject_id}`);
+      // Absent students get 0 marks automatically
+      if (is_absent) {
+        obtained_marks = 0;
+      } else {
+        // Validate obtained_marks does not exceed total_marks
+        const { rows: config } = await client.query(
+          `SELECT total_marks FROM exam_subjects
+           WHERE exam_id=$1 AND class_id=$2 AND subject_id=$3`,
+          [examId, class_id, subject_id]
+        );
+        if (!config[0])
+          throw new Error(`No exam subject configured for class_id=${class_id}, subject_id=${subject_id}`);
+        if (parseFloat(obtained_marks) > parseFloat(config[0].total_marks))
+          throw new Error(`obtained_marks (${obtained_marks}) exceeds total_marks (${config[0].total_marks}) for subject_id=${subject_id}`);
+      }
 
       const { rows } = await client.query(
-        `INSERT INTO student_marks (exam_id, student_id, subject_id, class_id, obtained_marks, remarks)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO student_marks (exam_id, student_id, subject_id, class_id, obtained_marks, remarks, is_absent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (exam_id, student_id, subject_id)
-         DO UPDATE SET obtained_marks = EXCLUDED.obtained_marks, remarks = EXCLUDED.remarks
+         DO UPDATE SET obtained_marks = EXCLUDED.obtained_marks,
+                       remarks        = EXCLUDED.remarks,
+                       is_absent      = EXCLUDED.is_absent
          RETURNING *`,
-        [examId, student_id, subject_id, class_id, obtained_marks, remarks]
+        [examId, student_id, subject_id, class_id, obtained_marks, remarks, is_absent]
       );
       saved.push(rows[0]);
     }
@@ -325,23 +378,33 @@ const calculateResults = async (req, res) => {
   try {
     const examId = req.params.examId;
 
-    // Check exam exists
-    const { rows: exam } = await client.query(`SELECT id FROM exams WHERE id = $1`, [examId]);
-    if (!exam[0]) return res.status(404).json({ success: false, message: 'Exam not found' });
-
+    // Check exam exists and is not published/locked
     await client.query('BEGIN');
+    try { await checkNotPublished(client, examId); }
+    catch (e) { await client.query('ROLLBACK'); return res.status(e.code || 400).json({ success: false, message: e.message }); }
 
     // Aggregate marks per student
+    // - Absent subjects: obtained=0, excluded from percentage numerator/denominator
+    //   so absent doesn't distort average, but student is auto-FAIL
     const { rows: aggregated } = await client.query(
       `SELECT
          sm.student_id,
          sm.class_id,
-         SUM(es.total_marks)                                             AS total_marks,
-         SUM(sm.obtained_marks)                                          AS obtained_marks,
-         ROUND(SUM(sm.obtained_marks) / SUM(es.total_marks) * 100, 2)   AS percentage,
-         -- fail if any subject is below passing
-         CASE WHEN MIN(sm.obtained_marks - es.passing_marks) >= 0
-              THEN 'pass' ELSE 'fail' END                                AS result_status
+         SUM(es.total_marks)                                                                    AS total_marks,
+         SUM(sm.obtained_marks)                                                                 AS obtained_marks,
+         -- percentage: only over subjects the student actually appeared for
+         CASE WHEN SUM(CASE WHEN NOT sm.is_absent THEN es.total_marks ELSE 0 END) = 0
+              THEN 0
+              ELSE ROUND(
+                SUM(CASE WHEN NOT sm.is_absent THEN sm.obtained_marks ELSE 0 END)
+                / SUM(CASE WHEN NOT sm.is_absent THEN es.total_marks   ELSE 0 END) * 100,
+                2
+              )
+         END                                                                                    AS percentage,
+         -- fail if any subject absent OR below passing
+         CASE WHEN BOOL_OR(sm.is_absent)
+                OR MIN(CASE WHEN NOT sm.is_absent THEN sm.obtained_marks - es.passing_marks ELSE 0 END) < 0
+              THEN 'fail' ELSE 'pass' END                                                       AS result_status
        FROM student_marks sm
        JOIN exam_subjects es ON es.exam_id    = sm.exam_id
                              AND es.class_id   = sm.class_id
@@ -441,13 +504,17 @@ const getStudentReportCard = async (req, res) => {
          es.total_marks,
          es.passing_marks,
          sm.obtained_marks,
+         sm.is_absent,
+         sm.remarks,
          ROUND(sm.obtained_marks / NULLIF(es.total_marks,0) * 100, 2)   AS subject_percentage,
-         calculate_grade(
-           ROUND(sm.obtained_marks / NULLIF(es.total_marks,0) * 100, 2)
-         )                                                               AS subject_grade,
-         CASE WHEN sm.obtained_marks >= es.passing_marks
-              THEN 'pass' ELSE 'fail' END                               AS subject_status,
-         sm.remarks
+         CASE WHEN sm.is_absent THEN NULL
+              ELSE calculate_grade(
+                ROUND(sm.obtained_marks / NULLIF(es.total_marks,0) * 100, 2)
+              )
+         END                                                             AS subject_grade,
+         CASE WHEN sm.is_absent THEN 'absent'
+              WHEN sm.obtained_marks >= es.passing_marks THEN 'pass'
+              ELSE 'fail' END                                            AS subject_status
        FROM student_marks sm
        JOIN subjects      s  ON s.id  = sm.subject_id
        JOIN exam_subjects es ON es.exam_id    = sm.exam_id
@@ -514,13 +581,17 @@ const getClassRanking = async (req, res) => {
          rs.percentage,
          rs.grade,
          rs.result_status,
-         -- subjects failed count
+         -- subjects absent count
          COUNT(*) FILTER (
-           WHERE sm.obtained_marks < es.passing_marks
+           WHERE sm.is_absent
+         )                                            AS subjects_absent,
+         -- subjects failed count (appeared but below passing)
+         COUNT(*) FILTER (
+           WHERE NOT sm.is_absent AND sm.obtained_marks < es.passing_marks
          )                                            AS subjects_failed,
          -- subjects passed count
          COUNT(*) FILTER (
-           WHERE sm.obtained_marks >= es.passing_marks
+           WHERE NOT sm.is_absent AND sm.obtained_marks >= es.passing_marks
          )                                            AS subjects_passed
        FROM result_summary rs
        JOIN students      st ON st.id = rs.student_id
@@ -586,12 +657,16 @@ const getClassReportCards = async (req, res) => {
          s.name  AS subject_name,
          s.code  AS subject_code,
          es.total_marks, es.passing_marks,
-         sm.obtained_marks, sm.remarks,
+         sm.obtained_marks, sm.remarks, sm.is_absent,
          ROUND(sm.obtained_marks / NULLIF(es.total_marks,0) * 100, 2)              AS subject_percentage,
-         calculate_grade(
-           ROUND(sm.obtained_marks / NULLIF(es.total_marks,0) * 100, 2)
-         )                                                                          AS subject_grade,
-         CASE WHEN sm.obtained_marks >= es.passing_marks THEN 'pass' ELSE 'fail' END AS subject_status
+         CASE WHEN sm.is_absent THEN NULL
+              ELSE calculate_grade(
+                ROUND(sm.obtained_marks / NULLIF(es.total_marks,0) * 100, 2)
+              )
+         END                                                                        AS subject_grade,
+         CASE WHEN sm.is_absent THEN 'absent'
+              WHEN sm.obtained_marks >= es.passing_marks THEN 'pass'
+              ELSE 'fail' END                                                       AS subject_status
        FROM student_marks sm
        JOIN subjects      s  ON s.id  = sm.subject_id
        JOIN exam_subjects es ON es.exam_id    = sm.exam_id
@@ -691,6 +766,7 @@ const getStudentPerformance = async (req, res) => {
       `SELECT
          sm.exam_id,
          sm.obtained_marks,
+         sm.is_absent,
          es.total_marks,
          es.passing_marks,
          ROUND(sm.obtained_marks / NULLIF(es.total_marks,0) * 100, 2) AS subject_percentage,
@@ -722,6 +798,7 @@ const getStudentPerformance = async (req, res) => {
         total_marks:        parseFloat(m.total_marks),
         passing_marks:      parseFloat(m.passing_marks),
         subject_percentage: parseFloat(m.subject_percentage),
+        is_absent:          m.is_absent,
       });
     });
 
@@ -746,6 +823,8 @@ module.exports = {
   updateExam,
   updateExamStatus,
   deleteExam,
+  publishResults,
+  unpublishResults,
   // Exam Subjects
   getExamSubjects,
   addExamSubject,
