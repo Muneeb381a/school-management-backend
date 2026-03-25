@@ -230,6 +230,29 @@ const generateNotifications = async (req, res) => {
       );
     }
 
+    // ── 8. Online classes starting within 15 minutes ────────────
+    const in15min = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const { rows: soonClasses } = await client.query(`
+      SELECT oc.id, oc.title, oc.scheduled_at, oc.duration_minutes,
+             t.full_name AS teacher_name,
+             c.name AS class_name
+      FROM online_classes oc
+      JOIN teachers t ON t.id = oc.teacher_id
+      LEFT JOIN classes c ON c.id = oc.class_id
+      WHERE oc.status = 'scheduled'
+        AND oc.scheduled_at BETWEEN NOW() AND $1
+    `, [in15min]);
+    for (const oc of soonClasses) {
+      const timeStr = new Date(oc.scheduled_at).toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit' });
+      await ins(
+        'online_class',
+        `Class Starting Soon — ${oc.title}`,
+        `"${oc.title}" by ${oc.teacher_name}${oc.class_name ? ' for ' + oc.class_name : ''} starts at ${timeStr}.`,
+        '/online-classes',
+        `online_class_soon_${oc.id}_${today}`
+      );
+    }
+
     await client.query('COMMIT');
     res.json({ success: true, inserted, message: `${inserted} new notification(s) generated` });
   } catch (err) {
