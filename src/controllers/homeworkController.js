@@ -1,9 +1,6 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[HOMEWORK]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 const getHomework = async (req, res) => {
   try {

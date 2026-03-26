@@ -18,7 +18,7 @@ const { requestLogger } = require('./utils/logger');
 const swaggerUi = require('swagger-ui-express');
 const { swaggerSpec, swaggerUiOptions } = require('./config/swagger');
 
-const { verifyToken, requireRole }   = require('./middleware/authMiddleware');
+const { verifyToken, requireRole, requirePasswordChanged } = require('./middleware/authMiddleware');
 const errorHandler                   = require('./middleware/errorHandler');
 const { getAuditLogs }               = require('./middleware/auditLog');
 const requestId                      = require('./middleware/requestId');
@@ -127,16 +127,30 @@ const loginLimiter = rateLimit({
   keyGenerator: (req) => ipKeyGenerator(req),
 });
 
-// Per-user rate limit for authenticated routes (100 req/min per user)
+// Per-user rate limit for all authenticated routes (reads + writes)
+// Raised to 300/min to comfortably cover legitimate dashboard usage
+// (7 parallel API calls on load × multiple pages open = ~50 req/min normally)
 const userLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 100,
+  max: 300,
   message: { success: false, message: 'Too many requests. Please slow down.' },
   standardHeaders: true,
   legacyHeaders: false,
-  // Key: authenticated user ID (set by verifyToken) or normalized IP as fallback
   keyGenerator: (req) => (req.user?.id ? `user_${req.user.id}` : ipKeyGenerator(req)),
-  skip: (req) => req.method === 'GET', // reads are cheaper — don't throttle GETs
+  // No skip — GET requests are now throttled too
+});
+
+// Heavy read limiter — for computationally expensive GET endpoints:
+// dashboard stats, analytics reports, fee summaries.
+// These each run 10-15 parallel DB queries; 20/min is generous for human use.
+const heavyReadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  message: { success: false, message: 'Too many report requests. Please wait a moment.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req.user?.id ? `heavy_${req.user.id}` : ipKeyGenerator(req)),
+  skip: (req) => req.method !== 'GET', // only applies to GET
 });
 
 // Global API limiter (fallback for unauthenticated routes)
@@ -216,9 +230,20 @@ for (const prefix of ['/api', '/api/v1']) {
 
 // ── 10. Global JWT guard ──────────────────────────────────────────────────────
 app.use(verifyToken);
+app.use(requirePasswordChanged);
 
-// Per-user throttle on all authenticated write operations
+// Per-user throttle on all authenticated routes
 app.use(userLimiter);
+
+// Heavy read limiter — dashboard stats, analytics, fee summaries
+app.use([
+  /^\/api(\/v1)?\/dashboard/,
+  /^\/api(\/v1)?\/analytics/,
+  /^\/api(\/v1)?\/fees\/dashboard-stats/,
+  /^\/api(\/v1)?\/attendance\/monthly/,
+  /^\/api(\/v1)?\/attendance\/summary/,
+  /^\/api(\/v1)?\/salary\/summary/,
+], heavyReadLimiter);
 
 // Export rate limiter — applied before any /export or /import route
 app.use([

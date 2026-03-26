@@ -1,5 +1,6 @@
 const pool = require('../db');
-const err500 = (res, err) => { console.error('[SYLLABUS]', err.message); res.status(500).json({ success: false, message: err.message }); };
+const { serverErr } = require('../utils/serverErr');
+const err500 = (res, err) => { console.error('[SYLLABUS]', err.message); return serverErr(res, err); };
 
 /* ── GET /api/syllabus  (filter by class_id, subject_id, academic_year) ── */
 async function getTopics(req, res) {

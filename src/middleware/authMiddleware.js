@@ -75,4 +75,25 @@ function requireOwnerOrAdmin(getResourceId) {
   };
 }
 
-module.exports = { verifyToken, requireRole, requireOwnerOrAdmin };
+/**
+ * Blocks all API access for users whose temporary password hasn't been changed.
+ * Mount this AFTER verifyToken globally so it applies to all protected routes.
+ *
+ * Exempt paths: none needed — auth routes (/api/auth/*) are mounted before
+ * the global verifyToken so they never reach this middleware.
+ *
+ * Response: 403 PASSWORD_CHANGE_REQUIRED
+ * Frontend should intercept this code and redirect to the change-password screen.
+ */
+function requirePasswordChanged(req, _res, next) {
+  if (req.user?.mustChangePassword) {
+    return next(new AppError(
+      'You must change your temporary password before continuing.',
+      403,
+      'PASSWORD_CHANGE_REQUIRED'
+    ));
+  }
+  next();
+}
+
+module.exports = { verifyToken, requireRole, requireOwnerOrAdmin, requirePasswordChanged };

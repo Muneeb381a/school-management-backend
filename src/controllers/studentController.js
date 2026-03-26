@@ -1,11 +1,14 @@
 const bcrypt   = require('bcryptjs');
 const pool     = require('../db');
 const AppError = require('../utils/AppError');
+const { invalidateDashboard } = require('../utils/cache');
 const { parsePagination, paginationMeta } = require('../utils/pagination');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
 const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
 const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
 const { sendMail }                              = require('../utils/mailer');
+const { serverErr }      = require('../utils/serverErr');
+const { genTempPassword } = require('../utils/genTempPassword');
 
 const ALL_FIELDS = [
   'class_id',
@@ -136,7 +139,7 @@ const createStudent = async (req, res, next) => {
     );
     const student  = rows[0];
     const username = buildUsername(student.full_name, student.id);
-    const rawPw    = `Stu@${student.id}`;
+    const rawPw    = genTempPassword();
     const hashed   = await bcrypt.hash(rawPw, 10);
     await client.query(
       `INSERT INTO users (username, password, role, name, entity_id, must_change_password)
@@ -145,6 +148,7 @@ const createStudent = async (req, res, next) => {
       [username, hashed, student.full_name, student.id]
     );
     await client.query('COMMIT');
+    invalidateDashboard().catch(() => {});
 
     // Try to email credentials — prefer student email, fall back to father email
     const emailTo = student.email || student.father_email || null;
@@ -193,6 +197,7 @@ const updateStudent = async (req, res, next) => {
       [...values, req.params.id]
     );
     if (!rows[0]) throw new AppError('Student not found.', 404);
+    invalidateDashboard().catch(() => {});
     res.json({ success: true, data: rows[0], message: 'Student updated successfully.' });
   } catch (err) {
     next(err);
@@ -206,6 +211,7 @@ const deleteStudent = async (req, res, next) => {
       [req.params.id]
     );
     if (!rows[0]) throw new AppError('Student not found.', 404);
+    invalidateDashboard().catch(() => {});
     res.json({ success: true, message: 'Student deleted successfully.' });
   } catch (err) {
     next(err);
@@ -338,7 +344,7 @@ const resetCredentials = async (req, res, next) => {
     if (!rows[0]) throw new AppError('Student not found.', 404);
     const student  = rows[0];
     const username = buildUsername(student.full_name, student.id);
-    const rawPw    = `Stu@${student.id}`;
+    const rawPw    = genTempPassword();
     const hashed   = await bcrypt.hash(rawPw, 10);
     await pool.query(
       `INSERT INTO users (username, password, role, name, entity_id, must_change_password)
@@ -444,7 +450,7 @@ const importStudents = async (req, res, next) => {
         );
         const student  = ins[0];
         const username = buildUsername(student.full_name, student.id);
-        const rawPw    = `Stu@${student.id}`;
+        const rawPw    = genTempPassword();
         const hashed   = await bcrypt.hash(rawPw, 10);
         await client.query(
           `INSERT INTO users (username, password, role, name, entity_id)

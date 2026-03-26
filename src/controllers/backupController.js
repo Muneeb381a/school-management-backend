@@ -1,4 +1,5 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
 // All tables in dependency order (parents before children).
 // Used for both export and restore.
@@ -49,10 +50,6 @@ const BACKUP_TABLES = [
   'teacher_documents',
 ];
 
-const serverErr = (res, err) => {
-  console.error('[BACKUP]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 /* ─── GET /api/backup/export ─────────────────────────────────────────── */
 const exportBackup = async (req, res) => {

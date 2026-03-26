@@ -1,9 +1,6 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[ROLLOVER]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 // GET /rollover/preview
 // Returns all active classes with student counts

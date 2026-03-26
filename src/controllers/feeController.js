@@ -1,12 +1,10 @@
 const pool     = require('../db');
 const AppError = require('../utils/AppError');
+const { invalidateDashboard } = require('../utils/cache');
+const { serverErr }        = require('../utils/serverErr');
 const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
 const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
 
-const serverErr = (res, err) => {
-  console.error('[FEE]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 // ─── Helpers ────────────────────────────────────────────────
 function calcStatus(totalAmount, discountAmount, fineAmount, paidAmount, dueDate) {
@@ -155,6 +153,11 @@ const getInvoices = async (req, res) => {
       LEFT JOIN classes c ON c.id = fi.class_id
       WHERE 1=1`;
     const p = [];
+    // Teachers only see invoices for classes they are assigned to
+    if (req.user.role === 'teacher') {
+      p.push(req.user.entity_id);
+      q += ` AND fi.class_id IN (SELECT class_id FROM teacher_classes WHERE teacher_id = $${p.length})`;
+    }
     if (student_id)    { p.push(student_id);    q += ` AND fi.student_id=$${p.length}`; }
     if (class_id)      { p.push(class_id);      q += ` AND fi.class_id=$${p.length}`; }
     if (billing_month) { p.push(billing_month); q += ` AND fi.billing_month=$${p.length}`; }
@@ -567,6 +570,7 @@ const recordPayment = async (req, res) => {
     );
 
     await client.query('COMMIT');
+    invalidateDashboard().catch(() => {});
 
     const { rows: final } = await pool.query(
       `SELECT fp.*, s.full_name AS student_name, fi.invoice_no
@@ -1648,7 +1652,7 @@ const sendFeeReminders = async (req, res) => {
     res.json({ success: true, invoicesProcessed: invoices.length, emailsSent, smsSent, skipped });
   } catch (err) {
     console.error('[FEE REMINDERS]', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   } finally {
     client.release();
   }

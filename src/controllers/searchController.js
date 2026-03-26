@@ -1,9 +1,6 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[SEARCH]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 // ── GET /api/search?q=...  ────────────────────────────────────
 // Returns up to 5 results per category:

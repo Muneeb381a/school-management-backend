@@ -108,11 +108,12 @@ async function login(req, res, next) {
     await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
 
     const payload = {
-      id:        user.id,
-      username:  user.username,
-      name:      user.name,
-      role:      user.role,
-      entity_id: user.entity_id,
+      id:                user.id,
+      username:          user.username,
+      name:              user.name,
+      role:              user.role,
+      entity_id:         user.entity_id,
+      mustChangePassword: user.must_change_password || false,
     };
 
     const accessToken  = signAccess(payload);
@@ -210,7 +211,10 @@ async function changePassword(req, res, next) {
     if (!valid) throw new AppError('Current password is incorrect.', 401, 'WRONG_PASSWORD');
 
     const hashed = await bcrypt.hash(new_password, 12);
-    await pool.query('UPDATE users SET password = $1 WHERE id = $2', [hashed, req.user.id]);
+    await pool.query(
+      'UPDATE users SET password = $1, must_change_password = FALSE WHERE id = $2',
+      [hashed, req.user.id]
+    );
 
     // Revoke ALL active refresh tokens — forces re-login on all devices
     await pool.query(

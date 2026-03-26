@@ -1,9 +1,10 @@
 const pool = require('../db');
 const { docUpload, uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
+const { serverErr } = require('../utils/serverErr');
 
 const err500 = (res, err, tag = 'DIARY') => {
   console.error(`[${tag}]`, err.message);
-  res.status(500).json({ success: false, message: err.message });
+  return serverErr(res, err);
 };
 
 /* ─────────────────────────────────────────────────────────

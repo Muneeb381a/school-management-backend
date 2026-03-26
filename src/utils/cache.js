@@ -158,4 +158,13 @@ async function remember(key, ttlSeconds, fn) {
   return result;
 }
 
-module.exports = { get, set, del, delPattern, flush, remember };
+/**
+ * Invalidate all dashboard stat caches.
+ * Call fire-and-forget after any mutation that affects dashboard numbers
+ * (students, teachers, attendance, fee payments).
+ */
+async function invalidateDashboard() {
+  await delPattern('dashboard:stats:*');
+}
+
+module.exports = { get, set, del, delPattern, flush, remember, invalidateDashboard };

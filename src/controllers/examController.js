@@ -1,4 +1,5 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
 // ══════════════════════════════════════════════════════════════
 //  HELPER — grade from percentage
@@ -38,7 +39,7 @@ const publishResults = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Exam not found' });
     res.json({ success: true, data: rows[0], message: 'Results published and locked' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -53,7 +54,7 @@ const unpublishResults = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Exam not found' });
     res.json({ success: true, data: rows[0], message: 'Results unpublished — marks can be edited again' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -74,7 +75,7 @@ const getExams = async (req, res) => {
     );
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -85,7 +86,7 @@ const getExamById = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Exam not found' });
     res.json({ success: true, data: rows[0] });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -103,7 +104,7 @@ const createExam = async (req, res) => {
     );
     res.status(201).json({ success: true, data: rows[0], message: 'Exam created successfully' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -125,7 +126,7 @@ const updateExam = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Exam not found' });
     res.json({ success: true, data: rows[0], message: 'Exam updated successfully' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -142,7 +143,7 @@ const updateExamStatus = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Exam not found' });
     res.json({ success: true, data: rows[0], message: 'Exam status updated' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -153,7 +154,7 @@ const deleteExam = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Exam not found' });
     res.json({ success: true, message: 'Exam deleted successfully' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -191,7 +192,7 @@ const getExamSubjects = async (req, res) => {
     );
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -241,7 +242,7 @@ const removeExamSubject = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Exam subject not found' });
     res.json({ success: true, message: 'Exam subject removed' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -293,7 +294,7 @@ const getMarks = async (req, res) => {
     );
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -362,7 +363,7 @@ const deleteMark = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Mark not found' });
     res.json({ success: true, message: 'Mark deleted' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -443,7 +444,7 @@ const calculateResults = async (req, res) => {
     res.json({ success: true, data: upserted, message: `Results calculated for ${upserted.length} student(s)` });
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   } finally {
     client.release();
   }
@@ -487,7 +488,7 @@ const getResults = async (req, res) => {
     );
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -561,7 +562,7 @@ const getStudentReportCard = async (req, res) => {
       data: { summary: summary[0] || null, subjects, settings },
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -614,7 +615,7 @@ const getClassRanking = async (req, res) => {
 
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -707,7 +708,7 @@ const getClassReportCards = async (req, res) => {
 
     res.json({ success: true, data });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -811,7 +812,7 @@ const getStudentPerformance = async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 

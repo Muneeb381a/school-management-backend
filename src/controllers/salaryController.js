@@ -1,10 +1,7 @@
 const pool = require('../db');
 const { buildWorkbook, sendWorkbook } = require('../utils/excelExport');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[SALARY]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 // ── Salary Structures ────────────────────────────────────────
 
@@ -340,7 +337,7 @@ const getMySlips = async (req, res) => {
     );
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 

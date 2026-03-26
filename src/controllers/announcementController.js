@@ -1,11 +1,8 @@
 const pool                = require('../db');
 const { sendMail }        = require('../utils/mailer');
 const { announcementEmail } = require('../utils/emailTemplates');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[ANNOUNCEMENTS]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 // ── Shared base SELECT ────────────────────────────────────────
 const BASE_SELECT = `

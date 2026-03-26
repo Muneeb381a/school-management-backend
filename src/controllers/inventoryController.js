@@ -2,11 +2,8 @@ const pool     = require('../db');
 const AppError = require('../utils/AppError');
 const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
 const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[INVENTORY]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 const getItems = async (req, res) => {
   try {

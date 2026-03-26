@@ -1,11 +1,8 @@
 const pool  = require('../db');
 const cache = require('../utils/cache');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[SETTINGS]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 // ── School Settings ───────────────────────────────────────────
 

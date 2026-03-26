@@ -1,9 +1,6 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[QUIZ]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 // GET /quizzes?class_id&subject_id&status
 const getQuizzes = async (req, res) => {

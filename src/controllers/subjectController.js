@@ -1,4 +1,5 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
 // ══════════════════════════════════════════════════════════════
 //  SUBJECTS — master catalogue CRUD
@@ -12,7 +13,7 @@ const getSubjects = async (req, res) => {
     );
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -30,7 +31,7 @@ const createSubject = async (req, res) => {
     res.status(201).json({ success: true, data: rows[0], message: 'Subject created successfully' });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ success: false, message: 'A subject with this name or code already exists' });
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -49,7 +50,7 @@ const updateSubject = async (req, res) => {
     res.json({ success: true, data: rows[0], message: 'Subject updated successfully' });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ success: false, message: 'A subject with this name or code already exists' });
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -63,7 +64,7 @@ const deleteSubject = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Subject not found' });
     res.json({ success: true, message: 'Subject deleted successfully' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -100,7 +101,7 @@ const getClassSubjects = async (req, res) => {
     );
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -120,7 +121,7 @@ const assignSubjectToClass = async (req, res) => {
     );
     res.status(201).json({ success: true, data: rows[0], message: 'Subject assigned to class' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -134,7 +135,7 @@ const removeSubjectFromClass = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Assignment not found' });
     res.json({ success: true, message: 'Subject removed from class' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -162,7 +163,7 @@ const assignTeacherToSubject = async (req, res) => {
     );
     res.status(201).json({ success: true, data: rows[0], message: 'Teacher assigned to subject' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -176,7 +177,7 @@ const removeTeacherAssignment = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Assignment not found' });
     res.json({ success: true, message: 'Teacher assignment removed' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -215,7 +216,7 @@ const getClassSchedule = async (req, res) => {
     );
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -249,7 +250,7 @@ const getAllSchedules = async (req, res) => {
     );
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 

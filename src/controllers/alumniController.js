@@ -1,9 +1,6 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[ALUMNI]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 // GET /alumni?graduation_year&search
 const getAlumni = async (req, res) => {

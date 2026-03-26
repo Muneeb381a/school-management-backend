@@ -1,11 +1,8 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
 const err400 = (res, msg) => res.status(400).json({ success: false, message: msg });
 const err404 = (res)      => res.status(404).json({ success: false, message: 'Online class not found' });
-const serverErr = (res, e) => {
-  console.error('[ONLINE_CLASS]', e.message);
-  res.status(500).json({ success: false, message: e.message });
-};
 
 // Base SELECT used in multiple queries
 const BASE_SELECT = `

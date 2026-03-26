@@ -1,6 +1,7 @@
 const pool = require('../db');
 const { sendPushToRole, sendPushToUser } = require('../utils/pushNotification');
 const { childLogger } = require('../utils/logger');
+const { serverErr } = require('../utils/serverErr');
 const log = childLogger('PUSH');
 
 /**
@@ -21,7 +22,7 @@ const savePushToken = async (req, res) => {
     res.json({ success: true, message: 'Push token saved' });
   } catch (err) {
     log.error({ err: err.message }, 'savePushToken error');
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -37,7 +38,7 @@ const removePushToken = async (req, res) => {
     );
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -61,7 +62,7 @@ const sendPush = async (req, res) => {
     res.json({ success: true, data: result });
   } catch (err) {
     log.error({ err: err.message }, 'sendPush error');
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 

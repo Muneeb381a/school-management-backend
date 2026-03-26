@@ -1,9 +1,6 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[HW_SUBMISSION]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 // GET /:homework_id/submissions
 // LEFT JOIN all students in the homework's class with their submission row

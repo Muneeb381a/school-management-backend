@@ -1,9 +1,6 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[CANTEEN]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 // ── Items ──────────────────────────────────────────────────────────────────
 

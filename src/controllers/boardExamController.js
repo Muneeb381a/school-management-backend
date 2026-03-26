@@ -1,9 +1,6 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[BOARD_EXAM]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 // ── GET /api/board-exams ──────────────────────────────────────
 // Query: exam_year, exam_level, board_name, status, class_id, search

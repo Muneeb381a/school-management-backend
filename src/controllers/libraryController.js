@@ -1,9 +1,6 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[LIBRARY]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 const FINE_PER_DAY   = 5;   // PKR 5 per day late
 const DEFAULT_LOAN_DAYS = 14; // default borrowing period

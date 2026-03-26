@@ -1,10 +1,20 @@
 const pool = require('../db');
 const { buildWorkbook, sendWorkbook } = require('../utils/excelExport');
+const { invalidateDashboard } = require('../utils/cache');
+const { serverErr } = require('../utils/serverErr');
 
-const serverErr = (res, err) => {
-  console.error('[ATTENDANCE]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
+/**
+ * Returns true if the teacher owns (is assigned to) the given class.
+ * Admins always pass — call this only when role === 'teacher'.
+ */
+async function teacherOwnsClass(teacherEntityId, classId) {
+  const { rows } = await pool.query(
+    'SELECT 1 FROM teacher_classes WHERE teacher_id = $1 AND class_id = $2 LIMIT 1',
+    [teacherEntityId, classId]
+  );
+  return rows.length > 0;
+}
+
 
 // ─────────────────────────────────────────────────────────────
 //  GET /api/attendance/class-students
@@ -17,6 +27,9 @@ const getClassStudentsAttendance = async (req, res) => {
     const { class_id, date, period_id } = req.query;
     if (!class_id || !date) {
       return res.status(400).json({ success: false, message: 'class_id and date are required' });
+    }
+    if (req.user.role === 'teacher' && !(await teacherOwnsClass(req.user.entity_id, class_id))) {
+      return res.status(403).json({ success: false, message: 'You are not assigned to this class.' });
     }
 
     const params = [class_id, date];
@@ -92,6 +105,13 @@ const bulkMark = async (req, res) => {
     return res.status(400).json({ success: false, message: 'records array is required' });
   }
 
+  if (req.user.role === 'teacher') {
+    const classId = records[0]?.class_id;
+    if (!classId || !(await teacherOwnsClass(req.user.entity_id, classId))) {
+      return res.status(403).json({ success: false, message: 'You are not assigned to this class.' });
+    }
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -132,6 +152,7 @@ const bulkMark = async (req, res) => {
     }
 
     await client.query('COMMIT');
+    invalidateDashboard().catch(() => {});
     res.status(201).json({ success: true, saved: results.length, message: `${results.length} records saved` });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -223,6 +244,11 @@ const getMonthlySummary = async (req, res) => {
   try {
     const { entity_type = 'student', class_id, month, period_id } = req.query;
     if (!month) return res.status(400).json({ success: false, message: 'month (YYYY-MM) is required' });
+    if (req.user.role === 'teacher' && entity_type === 'student') {
+      if (!class_id || !(await teacherOwnsClass(req.user.entity_id, class_id))) {
+        return res.status(403).json({ success: false, message: 'You are not assigned to this class.' });
+      }
+    }
 
     const startDate = `${month}-01`;
     const endDate   = new Date(new Date(startDate).getFullYear(), new Date(startDate).getMonth() + 1, 0)
@@ -447,6 +473,9 @@ const getAttendanceRegister = async (req, res) => {
     const { class_id, month } = req.query;
     if (!class_id || !month)
       return res.status(400).json({ success: false, message: 'class_id and month (YYYY-MM) required' });
+    if (req.user.role === 'teacher' && !(await teacherOwnsClass(req.user.entity_id, class_id))) {
+      return res.status(403).json({ success: false, message: 'You are not assigned to this class.' });
+    }
 
     const startDate = `${month}-01`;
     const d = new Date(startDate);

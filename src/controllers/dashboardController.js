@@ -1,239 +1,157 @@
 const pool  = require('../db');
 const cache = require('../utils/cache');
 const { childLogger } = require('../utils/logger');
+const { serverErr } = require('../utils/serverErr');
+const svc = require('../services/dashboardService');
 const log = childLogger('DASHBOARD');
 
-const serverErr = (res, err) => {
-  log.error({ err: err.message }, 'Dashboard error');
-  res.status(500).json({ success: false, message: err.message });
-};
+// ── Shared helper: build the monthly chart array ───────────────
+function buildChart(feeRows, expRows) {
+  const months = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - i);
+    months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  const feeMap = {};
+  const expMap = {};
+  feeRows.forEach(r => { feeMap[r.month] = parseFloat(r.fees     || 0); });
+  expRows.forEach(r => { expMap[r.month] = parseFloat(r.expenses || 0); });
+  return months.map(m => ({
+    month:    m,
+    label:    new Date(m + '-01').toLocaleDateString('en-PK', { month: 'short', year: '2-digit' }),
+    fees:     feeMap[m] || 0,
+    expenses: expMap[m] || 0,
+  }));
+}
 
-// GET /api/dashboard/stats
-// Returns all data needed for the live dashboard in one round-trip.
+// ── Shared helper: build the standard stats payload ───────────
+function buildStatsPayload({ att, feeKpis, pendingSalaries, chartData, unmarked, events, alerts, counts }) {
+  const totalActive = parseInt(att.total_active) || 0;
+  const attPresent  = parseInt(att.present)      || 0;
+  const attMarked   = parseInt(att.marked)        || 0;
+  const attPct      = totalActive > 0 ? Math.round((attPresent / totalActive) * 100) : null;
+  const feePct      = feeKpis.invoiced > 0
+    ? Math.round((feeKpis.collected / feeKpis.invoiced) * 100) : null;
+
+  return {
+    counts: {
+      all_students:       counts.all_students       || 0,
+      active_students:    counts.active_students    || 0,
+      inactive_students:  counts.inactive_students  || 0,
+      suspended_students: counts.suspended_students || 0,
+      graduated_students: counts.graduated_students || 0,
+      male_students:      counts.male_students      || 0,
+      female_students:    counts.female_students    || 0,
+      total_teachers:     counts.total_teachers     || 0,
+      total_classes:      counts.total_classes      || 0,
+      total_students:     counts.active_students    || 0, // backward-compat alias
+    },
+    kpis: {
+      attendance_today_pct: attPct,
+      attendance_present:   attPresent,
+      attendance_marked:    attMarked,
+      attendance_total:     totalActive,
+      fee_collection_pct:   feePct,
+      fee_collected:        feeKpis.collected,
+      fee_invoiced:         feeKpis.invoiced,
+      pending_salaries:     pendingSalaries,
+    },
+    chart: buildChart(chartData.feeRows, chartData.expRows),
+    today_panel: {
+      unmarked_classes: unmarked,
+      upcoming_events:  events,
+      overdue_homework: alerts.overdue_homework,
+    },
+    alerts: {
+      fee_defaulters: alerts.fee_defaulters,
+      chronic_absent: alerts.chronic_absent,
+      overdue_books:  alerts.overdue_books,
+    },
+  };
+}
+
+// ── GET /api/dashboard/stats ───────────────────────────────────
+// Returns KPI data only. Cached for 5 min. Used by the refresh button.
 const getStats = async (req, res) => {
   try {
-    const today      = new Date().toISOString().slice(0, 10);
-    // Cache key includes today's date so stats auto-expire at midnight
-    const cacheKey = `dashboard:stats:${today}`;
+    const date  = svc.today();
+    const month = svc.thisMonth();
+    const cacheKey = `dashboard:stats:${date}`;
+
     const cached = await cache.get(cacheKey);
     if (cached) {
       log.debug({ cacheKey }, 'Dashboard stats cache hit');
       return res.json({ success: true, data: cached, _cached: true });
     }
-    const thisMonth  = today.slice(0, 7);
 
-    // Start of the 6-month window (1st of 5 months ago)
-    const d6 = new Date(); d6.setDate(1); d6.setMonth(d6.getMonth() - 5);
-    const sixMonthStart = d6.toISOString().slice(0, 10);
+    const [att, feeKpis, pendingSalaries, chartData, unmarked, events, alerts, counts] =
+      await Promise.all([
+        svc.getAttendanceToday(date),
+        svc.getMonthFeeKpis(month),
+        svc.getPendingSalary(month),
+        svc.getChartData(svc.sixMonthsAgo()),
+        svc.getUnmarkedClasses(date),
+        svc.getWeekEvents(date),
+        svc.getAlertCounts(date, month),
+        svc.getCountsSummary(),
+      ]);
+
+    const payload = buildStatsPayload({ att, feeKpis, pendingSalaries, chartData, unmarked, events, alerts, counts });
+
+    await cache.set(cacheKey, payload, 300);
+    res.json({ success: true, data: payload });
+  } catch (err) { serverErr(res, err); }
+};
+
+// ── GET /api/dashboard/full ────────────────────────────────────
+// Returns everything getStats returns PLUS list data (students,
+// classes, teachers, exams, online classes, fee summary) so the
+// admin dashboard can load in a single request instead of 7.
+// Cached for 3 min (slightly less than stats cache).
+const getFullDashboard = async (req, res) => {
+  try {
+    const date  = svc.today();
+    const month = svc.thisMonth();
+    const cacheKey = `dashboard:full:${date}`;
+
+    const cached = await cache.get(cacheKey);
+    if (cached) {
+      log.debug({ cacheKey }, 'Dashboard full cache hit');
+      return res.json({ success: true, data: cached, _cached: true });
+    }
 
     const [
-      attRow,
-      feeCollected,
-      feeInvoiced,
-      pendingSalary,
-      feeChart,
-      expChart,
-      unmarkedClasses,
-      weekEvents,
-      overdueHW,
-      feeDefaulters,
-      chronicAbsent,
-      overdueBooks,
-      countsRow,
+      att, feeKpis, pendingSalaries, chartData, unmarked, events, alerts, counts,
+      students, classes, teachers, exams, onlineClasses, feeSummary,
     ] = await Promise.all([
-
-      // 1. Today's student attendance
-      pool.query(
-        `SELECT
-           COUNT(*) FILTER (WHERE status IN ('present','late'))::int AS present,
-           COUNT(*)::int AS marked,
-           (SELECT COUNT(*)::int FROM students WHERE status='active') AS total_active
-         FROM attendance
-         WHERE entity_type='student' AND date=$1 AND period_id IS NULL`,
-        [today]
-      ),
-
-      // 2a. This month fee collections
-      pool.query(
-        `SELECT COALESCE(SUM(amount),0)::numeric AS collected
-         FROM fee_payments
-         WHERE TO_CHAR(payment_date,'YYYY-MM') = $1`,
-        [thisMonth]
-      ),
-
-      // 2b. This month fee invoiced
-      pool.query(
-        `SELECT COALESCE(SUM(total_amount),0)::numeric AS invoiced
-         FROM fee_invoices
-         WHERE TO_CHAR(due_date,'YYYY-MM') = $1 AND status != 'cancelled'`,
-        [thisMonth]
-      ),
-
-      // 3. Pending salaries this month
-      pool.query(
-        `SELECT COUNT(*)::int AS pending
-         FROM salary_payments WHERE month=$1 AND status='pending'`,
-        [thisMonth]
-      ),
-
-      // 4a. Monthly fee collections chart — last 6 months
-      pool.query(
-        `SELECT TO_CHAR(payment_date,'YYYY-MM') AS month,
-                SUM(amount)::numeric              AS fees
-         FROM fee_payments
-         WHERE payment_date >= $1
-         GROUP BY month ORDER BY month`,
-        [sixMonthStart]
-      ),
-
-      // 4b. Monthly expenses chart — last 6 months
-      pool.query(
-        `SELECT TO_CHAR(expense_date,'YYYY-MM') AS month,
-                SUM(amount)::numeric             AS expenses
-         FROM expenses
-         WHERE expense_date >= $1 AND is_deleted = FALSE
-         GROUP BY month ORDER BY month`,
-        [sixMonthStart]
-      ),
-
-      // 5. Classes with no student attendance marked today
-      pool.query(
-        `SELECT c.id, c.name, c.grade, c.section,
-                (SELECT COUNT(*)::int FROM students WHERE class_id=c.id AND status='active') AS student_count
-         FROM classes c
-         WHERE (SELECT COUNT(*)::int FROM students WHERE class_id=c.id AND status='active') > 0
-           AND c.id NOT IN (
-             SELECT DISTINCT class_id
-             FROM attendance
-             WHERE date=$1 AND entity_type='student' AND period_id IS NULL AND class_id IS NOT NULL
-           )
-         ORDER BY c.name
-         LIMIT 8`,
-        [today]
-      ),
-
-      // 6. Events this week (next 7 days)
-      pool.query(
-        `SELECT id, title, start_date AS event_date, type AS event_type
-         FROM events
-         WHERE start_date BETWEEN $1 AND $1::date + INTERVAL '7 days'
-         ORDER BY start_date
-         LIMIT 5`,
-        [today]
-      ),
-
-      // 7. Overdue homework assignments
-      pool.query(
-        `SELECT COUNT(*)::int AS count FROM homework WHERE due_date < $1`,
-        [today]
-      ),
-
-      // 8. Fee defaulters — students with unpaid/partial invoices past due
-      pool.query(
-        `SELECT COUNT(DISTINCT student_id)::int AS count
-         FROM fee_invoices
-         WHERE status IN ('unpaid','partial') AND due_date < $1`,
-        [today]
-      ),
-
-      // 9. Students with 3+ absences this month (chronic absentees)
-      pool.query(
-        `SELECT COUNT(*)::int AS count
-         FROM (
-           SELECT entity_id
-           FROM attendance
-           WHERE entity_type='student' AND status='absent'
-             AND date >= $1::date
-           GROUP BY entity_id
-           HAVING COUNT(*) >= 3
-         ) t`,
-        [`${thisMonth}-01`]
-      ),
-
-      // 10. Overdue library books
-      pool.query(
-        `SELECT COUNT(*)::int AS count
-         FROM book_issues
-         WHERE due_date < $1 AND status IN ('issued','overdue') AND return_date IS NULL`,
-        [today]
-      ),
-
-      // 11. Totals: students, teachers, classes
-      pool.query(
-        `SELECT
-           (SELECT COUNT(*)::int FROM students  WHERE status = 'active'   AND deleted_at IS NULL) AS total_students,
-           (SELECT COUNT(*)::int FROM students  WHERE status = 'active' AND gender = 'Male'   AND deleted_at IS NULL) AS male_students,
-           (SELECT COUNT(*)::int FROM students  WHERE status = 'active' AND gender = 'Female' AND deleted_at IS NULL) AS female_students,
-           (SELECT COUNT(*)::int FROM teachers  WHERE status = 'active'   AND deleted_at IS NULL) AS total_teachers,
-           (SELECT COUNT(*)::int FROM classes)                                                     AS total_classes`
-      ),
+      svc.getAttendanceToday(date),
+      svc.getMonthFeeKpis(month),
+      svc.getPendingSalary(month),
+      svc.getChartData(svc.sixMonthsAgo()),
+      svc.getUnmarkedClasses(date),
+      svc.getWeekEvents(date),
+      svc.getAlertCounts(date, month),
+      svc.getCountsSummary(),
+      // List data
+      svc.getRecentStudents(6),
+      svc.getClassesList(),
+      svc.getRecentTeachers(12),
+      svc.getUpcomingExams(date, 5),
+      svc.getUpcomingOnlineClasses(5),
+      svc.getFeeSummary(),
     ]);
 
-    // ── Build monthly chart (last 6 months, merge fee + expense rows) ──
-    const months = [];
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - i);
-      months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-    }
-    const feeMap  = {};
-    const expMap  = {};
-    feeChart.rows.forEach(r => { feeMap[r.month]  = parseFloat(r.fees     || 0); });
-    expChart.rows.forEach(r => { expMap[r.month]   = parseFloat(r.expenses || 0); });
-
-    const chart = months.map(m => ({
-      month:    m,
-      label:    new Date(m + '-01').toLocaleDateString('en-PK', { month: 'short', year: '2-digit' }),
-      fees:     feeMap[m]  || 0,
-      expenses: expMap[m]  || 0,
-    }));
-
-    // ── Attendance % ──
-    const att         = attRow.rows[0];
-    const totalActive = parseInt(att.total_active) || 0;
-    const attPresent  = parseInt(att.present)      || 0;
-    const attMarked   = parseInt(att.marked)        || 0;
-    const attPct      = totalActive > 0 ? Math.round((attPresent / totalActive) * 100) : null;
-
-    // ── Fee collection rate this month ──
-    const collected = parseFloat(feeCollected.rows[0]?.collected || 0);
-    const invoiced  = parseFloat(feeInvoiced.rows[0]?.invoiced   || 0);
-    const feePct    = invoiced > 0 ? Math.round((collected / invoiced) * 100) : null;
-
-    const counts = countsRow.rows[0] || {};
     const payload = {
-        counts: {
-          total_students:  counts.total_students  || 0,
-          male_students:   counts.male_students   || 0,
-          female_students: counts.female_students || 0,
-          total_teachers:  counts.total_teachers  || 0,
-          total_classes:   counts.total_classes   || 0,
-        },
-        kpis: {
-          attendance_today_pct:  attPct,
-          attendance_present:    attPresent,
-          attendance_marked:     attMarked,
-          attendance_total:      totalActive,
-          fee_collection_pct:    feePct,
-          fee_collected:         collected,
-          fee_invoiced:          invoiced,
-          pending_salaries:      parseInt(pendingSalary.rows[0]?.pending || 0),
-        },
-        chart,
-        today_panel: {
-          unmarked_classes: unmarkedClasses.rows,
-          upcoming_events:  weekEvents.rows,
-          overdue_homework: parseInt(overdueHW.rows[0]?.count || 0),
-        },
-        alerts: {
-          fee_defaulters:  parseInt(feeDefaulters.rows[0]?.count  || 0),
-          chronic_absent:  parseInt(chronicAbsent.rows[0]?.count  || 0),
-          overdue_books:   parseInt(overdueBooks.rows[0]?.count    || 0),
-        },
+      ...buildStatsPayload({ att, feeKpis, pendingSalaries, chartData, unmarked, events, alerts, counts }),
+      students,
+      classes,
+      teachers,
+      exams,
+      online_classes: onlineClasses,
+      fee_summary: feeSummary,
     };
 
-    // Cache for 5 minutes (dashboard is refreshed frequently)
-    await cache.set(cacheKey, payload, 300);
-
+    await cache.set(cacheKey, payload, 180);
     res.json({ success: true, data: payload });
   } catch (err) { serverErr(res, err); }
 };
@@ -294,7 +212,7 @@ const getTeacherDashboard = async (req, res) => {
     });
   } catch (err) {
     log.error({ err: err.message }, 'Teacher dashboard error');
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -374,7 +292,7 @@ const getStudentDashboard = async (req, res) => {
     });
   } catch (err) {
     log.error({ err: err.message }, 'Student dashboard error');
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -436,8 +354,8 @@ const getParentDashboard = async (req, res) => {
     });
   } catch (err) {
     log.error({ err: err.message }, 'Parent dashboard error');
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
-module.exports = { getStats, getTeacherDashboard, getStudentDashboard, getParentDashboard };
+module.exports = { getStats, getFullDashboard, getTeacherDashboard, getStudentDashboard, getParentDashboard };

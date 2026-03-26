@@ -1,15 +1,14 @@
 const bcrypt = require('bcryptjs');
 const pool   = require('../db');
+const { invalidateDashboard } = require('../utils/cache');
+const { serverErr }         = require('../utils/serverErr');
+const { genTempPassword }   = require('../utils/genTempPassword');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
 const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
 const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
 
 /* ── helpers ── */
 const notFound = (res) => res.status(404).json({ success: false, message: 'Teacher not found' });
-const serverErr = (res, err) => {
-  console.error('[TEACHER]', err.message);
-  res.status(500).json({ success: false, message: err.message });
-};
 
 // ─────────────────────────────────────────────
 //  GET /api/teachers
@@ -166,7 +165,7 @@ const createTeacher = async (req, res) => {
     const teacher  = rows[0];
     const base     = (teacher.full_name || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 5).padEnd(3, 'x');
     const username = `tch_${base}${teacher.id}`;
-    const rawPw    = `Tch@${teacher.id}`;
+    const rawPw    = genTempPassword();
     const hashed   = await bcrypt.hash(rawPw, 10);
     await client.query(
       `INSERT INTO users (username, password, role, name, entity_id, must_change_password)
@@ -175,6 +174,7 @@ const createTeacher = async (req, res) => {
       [username, hashed, teacher.full_name, teacher.id]
     );
     await client.query('COMMIT');
+    invalidateDashboard().catch(() => {});
 
     // Try email delivery — non-blocking
     let emailSent = false;
@@ -226,7 +226,7 @@ const resetTeacherCredentials = async (req, res) => {
     const teacher  = rows[0];
     const base     = (teacher.full_name || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 5).padEnd(3, 'x');
     const username = `tch_${base}${teacher.id}`;
-    const rawPw    = `Tch@${teacher.id}`;
+    const rawPw    = genTempPassword();
     const hashed   = await bcrypt.hash(rawPw, 10);
     await pool.query(
       `INSERT INTO users (username, password, role, name, entity_id, must_change_password)
@@ -318,6 +318,7 @@ const updateTeacher = async (req, res) => {
       ]
     );
     if (!rows[0]) return notFound(res);
+    invalidateDashboard().catch(() => {});
     res.json({ success: true, data: rows[0], message: 'Teacher updated successfully' });
   } catch (err) {
     if (err.code === '23505') {
@@ -349,6 +350,7 @@ const deleteTeacher = async (req, res) => {
       [req.params.id]
     );
     if (!rows[0]) return notFound(res);
+    invalidateDashboard().catch(() => {});
     res.json({ success: true, message: 'Teacher deleted successfully' });
   } catch (err) { serverErr(res, err); }
 };
@@ -527,7 +529,7 @@ const importTeachers = async (req, res, next) => {
         const teacher  = ins[0];
         const base     = (teacher.full_name || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 5).padEnd(3, 'x');
         const username = `tch_${base}${teacher.id}`;
-        const rawPw    = `Tch@${teacher.id}`;
+        const rawPw    = genTempPassword();
         const hashed   = await bcrypt.hash(rawPw, 10);
         await client.query(
           `INSERT INTO users (username, password, role, name, entity_id)

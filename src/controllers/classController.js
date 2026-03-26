@@ -1,4 +1,5 @@
 const pool = require('../db');
+const { serverErr } = require('../utils/serverErr');
 
 // GET /api/classes
 const getClasses = async (req, res) => {
@@ -24,7 +25,7 @@ const getClasses = async (req, res) => {
     const { rows } = await pool.query(query, params);
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -48,7 +49,7 @@ const getClass = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Class not found' });
     res.json({ success: true, data: rows[0] });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -63,7 +64,7 @@ const getClassStudents = async (req, res) => {
     );
     res.json({ success: true, data: rows, total: rows.length });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -94,7 +95,7 @@ const createClass = async (req, res) => {
   } catch (err) {
     console.error('[CREATE CLASS]', err.message);
     if (err.code === '23505') return res.status(409).json({ success: false, message: 'Class with this grade, section, and academic year already exists' });
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -136,7 +137,7 @@ const updateClass = async (req, res) => {
   } catch (err) {
     console.error('[UPDATE CLASS]', err.message);
     if (err.code === '23505') return res.status(409).json({ success: false, message: 'Class with this grade, section, and academic year already exists' });
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
@@ -151,7 +152,7 @@ const deleteClass = async (req, res) => {
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Class not found' });
     res.json({ success: true, message: 'Class deleted successfully' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverErr(res, err);
   }
 };
 
