@@ -816,6 +816,152 @@ const getStudentPerformance = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════════════════════
+//  DATE SHEET
+// ══════════════════════════════════════════════════════════════
+
+// GET /api/exams/:examId/date-sheet?class_id=
+// Returns all exam_subjects for the exam enriched with date/time scheduling.
+// Optional class_id filter for per-class print views.
+const getDateSheet = async (req, res) => {
+  try {
+    const { examId } = req.params;
+    const { class_id } = req.query;
+
+    // Verify exam exists
+    const { rows: examRows } = await pool.query(
+      'SELECT id, exam_name, exam_type, academic_year, start_date, end_date FROM exams WHERE id=$1',
+      [examId]
+    );
+    if (!examRows[0]) return res.status(404).json({ success: false, message: 'Exam not found' });
+
+    let q = `
+      SELECT
+        es.id,
+        es.exam_id,
+        es.class_id,
+        es.subject_id,
+        es.total_marks,
+        es.passing_marks,
+        es.exam_date,
+        es.start_time,
+        es.end_time,
+        es.venue,
+        s.name   AS subject_name,
+        s.code   AS subject_code,
+        c.name   AS class_name,
+        c.grade  AS class_grade,
+        c.section AS class_section
+      FROM exam_subjects es
+      JOIN subjects s ON s.id = es.subject_id
+      JOIN classes  c ON c.id = es.class_id
+      WHERE es.exam_id = $1
+    `;
+    const params = [examId];
+
+    if (class_id) {
+      params.push(class_id);
+      q += ` AND es.class_id = $${params.length}`;
+    }
+
+    q += ' ORDER BY es.exam_date NULLS LAST, es.start_time NULLS LAST, c.grade, s.name';
+
+    const { rows } = await pool.query(q, params);
+
+    res.json({
+      success: true,
+      exam:    examRows[0],
+      rows:    rows,
+      total:   rows.length,
+    });
+  } catch (err) { serverErr(res, err); }
+};
+
+// PATCH /api/exams/:examId/date-sheet
+// Body: { schedules: [{ exam_subject_id, exam_date, start_time, end_time, venue }] }
+// Upserts scheduling fields on existing exam_subjects rows.
+// Does NOT create new exam_subject rows — caller must add subjects first.
+const updateDateSheet = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { examId } = req.params;
+    const { schedules } = req.body;
+
+    if (!Array.isArray(schedules) || schedules.length === 0) {
+      return res.status(400).json({ success: false, message: 'schedules array is required' });
+    }
+
+    // Fetch exam bounds for date validation
+    const { rows: examRows } = await pool.query(
+      'SELECT start_date, end_date FROM exams WHERE id=$1', [examId]
+    );
+    if (!examRows[0]) return res.status(404).json({ success: false, message: 'Exam not found' });
+
+    const { start_date, end_date } = examRows[0];
+
+    await client.query('BEGIN');
+
+    const updated = [];
+    for (const s of schedules) {
+      const { exam_subject_id, exam_date, start_time, end_time, venue } = s;
+
+      if (!exam_subject_id) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ success: false, message: 'Each schedule entry needs exam_subject_id' });
+      }
+
+      // Validate exam_date falls within exam window (if both exam and date provided)
+      if (exam_date && start_date && end_date) {
+        const d = new Date(exam_date);
+        if (d < new Date(start_date) || d > new Date(end_date)) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({
+            success: false,
+            message: `exam_date ${exam_date} is outside exam window (${start_date} – ${end_date})`,
+          });
+        }
+      }
+
+      // Ensure the exam_subject belongs to this exam
+      const { rows: ownerCheck } = await client.query(
+        'SELECT id FROM exam_subjects WHERE id=$1 AND exam_id=$2',
+        [exam_subject_id, examId]
+      );
+      if (!ownerCheck[0]) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          success: false,
+          message: `exam_subject_id ${exam_subject_id} does not belong to exam ${examId}`,
+        });
+      }
+
+      const { rows } = await client.query(
+        `UPDATE exam_subjects
+         SET exam_date  = $1,
+             start_time = $2,
+             end_time   = $3,
+             venue      = $4
+         WHERE id = $5
+         RETURNING *`,
+        [exam_date || null, start_time || null, end_time || null, venue || null, exam_subject_id]
+      );
+      updated.push(rows[0]);
+    }
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      data:    updated,
+      message: `${updated.length} schedule entry(s) updated`,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    serverErr(res, err);
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   // Exams
   getExams,
@@ -841,4 +987,7 @@ module.exports = {
   getClassRanking,
   getClassReportCards,
   getStudentPerformance,
+  // Date Sheet
+  getDateSheet,
+  updateDateSheet,
 };

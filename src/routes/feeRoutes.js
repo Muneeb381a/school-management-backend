@@ -12,6 +12,7 @@ const {
   getChallanPrint,
   getPaymentImportTemplate, importFeePayments, exportFeesExcel,
   sendFeeReminders,
+  getSiblingGroups, getSiblingVoucher,
 } = require('../controllers/feeController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
@@ -73,5 +74,9 @@ router.get('/export',                  requireRole('admin'),            exportFe
 
 // Fee reminders (email + SMS)
 router.post('/send-reminders',         requireRole('admin'),            sendFeeReminders);
+
+// Sibling vouchers (read-only, no DB writes)
+router.get('/sibling-groups',  requireRole('admin', 'teacher'), getSiblingGroups);
+router.get('/sibling-voucher', requireRole('admin', 'teacher'), getSiblingVoucher);
 
 module.exports = router;

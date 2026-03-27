@@ -21,6 +21,8 @@ const {
   getClassRanking,
   getClassReportCards,
   getStudentPerformance,
+  getDateSheet,
+  updateDateSheet,
 } = require('../controllers/examController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
@@ -51,6 +53,10 @@ router.delete('/marks/:id',     requireRole('admin'),            deleteMark);
 // ── Publish / Unpublish results ───────────────────────────────
 router.post('/:examId/publish-results',   requireRole('admin'), publishResults);
 router.delete('/:examId/publish-results', requireRole('admin'), unpublishResults);
+
+// ── Date Sheet ────────────────────────────────────────────────
+router.get('/:examId/date-sheet',   requireRole('admin', 'teacher'), getDateSheet);
+router.patch('/:examId/date-sheet', requireRole('admin'),            updateDateSheet);
 
 // ── Results ───────────────────────────────────────────────────
 router.post('/:examId/calculate-results',                  requireRole('admin'),            calculateResults);

@@ -1658,6 +1658,219 @@ const sendFeeReminders = async (req, res) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+//  SIBLING VOUCHERS
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/fees/sibling-groups?billing_month=YYYY-MM
+ *
+ * Lists every sibling group that has outstanding (unpaid/partial/overdue)
+ * invoices for the given month.  Uses father_cnic as the shared family key.
+ *
+ * Response shape:
+ *   { success, data: [ { father_cnic, students:[{id,full_name,class_name}],
+ *                         invoices:[...], combined_total, combined_outstanding } ] }
+ */
+const getSiblingGroups = async (req, res) => {
+  try {
+    const { billing_month } = req.query;
+    if (!billing_month) {
+      return res.status(400).json({ success: false, message: 'billing_month required (YYYY-MM)' });
+    }
+
+    // Step 1: find sibling groups via shared father_cnic
+    const { rows: groups } = await pool.query(
+      `SELECT father_cnic, array_agg(id ORDER BY id) AS student_ids
+       FROM students
+       WHERE status = 'active'
+         AND deleted_at IS NULL
+         AND father_cnic IS NOT NULL
+         AND father_cnic <> ''
+       GROUP BY father_cnic
+       HAVING COUNT(*) > 1`,
+    );
+
+    if (groups.length === 0) {
+      return res.json({ success: true, data: [], total: 0 });
+    }
+
+    const allStudentIds = groups.flatMap(g => g.student_ids);
+
+    // Step 2: fetch all monthly invoices for these students in this month
+    const { rows: invoices } = await pool.query(
+      `SELECT fi.*,
+              s.full_name, s.father_cnic,
+              c.name AS class_name
+       FROM fee_invoices fi
+       JOIN students s ON s.id = fi.student_id
+       LEFT JOIN classes c ON c.id = fi.class_id
+       WHERE fi.student_id = ANY($1::int[])
+         AND fi.billing_month = $2
+         AND fi.invoice_type = 'monthly'
+         AND fi.status <> 'cancelled'
+       ORDER BY fi.student_id`,
+      [allStudentIds, billing_month],
+    );
+
+    // Step 3: group invoices back by father_cnic and compute totals
+    const invoiceByStudent = {};
+    invoices.forEach(inv => {
+      if (!invoiceByStudent[inv.student_id]) invoiceByStudent[inv.student_id] = [];
+      invoiceByStudent[inv.student_id].push(inv);
+    });
+
+    const data = groups
+      .map(g => {
+        const groupInvoices = g.student_ids.flatMap(sid => invoiceByStudent[sid] || []);
+
+        // Only include groups that actually have invoices this month
+        if (groupInvoices.length === 0) return null;
+
+        const combined_total = groupInvoices.reduce((sum, inv) => {
+          return sum + parseFloat(inv.total_amount || 0);
+        }, 0);
+
+        const combined_outstanding = groupInvoices.reduce((sum, inv) => {
+          const net  = parseFloat(inv.total_amount || 0)
+                     + parseFloat(inv.fine_amount   || 0)
+                     - parseFloat(inv.discount_amount || 0);
+          const paid = parseFloat(inv.paid_amount   || 0);
+          return sum + Math.max(0, net - paid);
+        }, 0);
+
+        return {
+          father_cnic:          g.father_cnic,
+          sibling_count:        g.student_ids.length,
+          invoices:             groupInvoices,
+          combined_total:       parseFloat(combined_total.toFixed(2)),
+          combined_outstanding: parseFloat(combined_outstanding.toFixed(2)),
+        };
+      })
+      .filter(Boolean);
+
+    res.json({ success: true, data, total: data.length });
+  } catch (err) { serverErr(res, err); }
+};
+
+/**
+ * GET /api/fees/sibling-voucher?billing_month=YYYY-MM&father_cnic=XXXXX
+ *
+ * Returns a single combined voucher object for one sibling group.
+ * No DB writes — purely a read/aggregation endpoint.
+ *
+ * Response shape:
+ *   { success, voucher: { father_cnic, father_name, billing_month,
+ *                          students, line_items, combined_total,
+ *                          combined_outstanding, voucher_ref } }
+ */
+const getSiblingVoucher = async (req, res) => {
+  try {
+    const { billing_month, father_cnic } = req.query;
+    if (!billing_month || !father_cnic) {
+      return res.status(400).json({
+        success: false,
+        message: 'billing_month (YYYY-MM) and father_cnic are required',
+      });
+    }
+
+    // Fetch all active siblings for this father
+    const { rows: siblings } = await pool.query(
+      `SELECT s.id, s.full_name, s.father_name, c.name AS class_name
+       FROM students s
+       LEFT JOIN classes c ON c.id = s.class_id
+       WHERE s.father_cnic = $1
+         AND s.status = 'active'
+         AND s.deleted_at IS NULL
+       ORDER BY s.id`,
+      [father_cnic],
+    );
+
+    if (siblings.length === 0) {
+      return res.status(404).json({ success: false, message: 'No active students found for this father_cnic' });
+    }
+
+    const studentIds = siblings.map(s => s.id);
+
+    // Fetch invoices + line items for these students this month
+    const { rows: invoices } = await pool.query(
+      `SELECT fi.*,
+              json_agg(
+                json_build_object(
+                  'description', fii.description,
+                  'amount',      fii.amount
+                ) ORDER BY fii.id
+              ) AS items
+       FROM fee_invoices fi
+       LEFT JOIN fee_invoice_items fii ON fii.invoice_id = fi.id
+       WHERE fi.student_id = ANY($1::int[])
+         AND fi.billing_month = $2
+         AND fi.invoice_type  = 'monthly'
+         AND fi.status       <> 'cancelled'
+       GROUP BY fi.id
+       ORDER BY fi.student_id`,
+      [studentIds, billing_month],
+    );
+
+    if (invoices.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `No monthly invoices found for billing_month ${billing_month}`,
+      });
+    }
+
+    // Build per-student sections
+    const invoiceByStudent = {};
+    invoices.forEach(inv => { invoiceByStudent[inv.student_id] = inv; });
+
+    const students = siblings.map(s => {
+      const inv = invoiceByStudent[s.id];
+      if (!inv) return { ...s, invoice: null, outstanding: 0 };
+
+      const net = parseFloat(inv.total_amount  || 0)
+                + parseFloat(inv.fine_amount    || 0)
+                - parseFloat(inv.discount_amount || 0);
+      const paid        = parseFloat(inv.paid_amount || 0);
+      const outstanding = parseFloat(Math.max(0, net - paid).toFixed(2));
+
+      return {
+        student_id:   s.id,
+        full_name:    s.full_name,
+        class_name:   s.class_name,
+        invoice_no:   inv.invoice_no,
+        invoice_id:   inv.id,
+        total_amount: parseFloat(inv.total_amount),
+        discount:     parseFloat(inv.discount_amount || 0),
+        fine:         parseFloat(inv.fine_amount     || 0),
+        paid:         paid,
+        outstanding:  outstanding,
+        status:       inv.status,
+        items:        inv.items || [],
+      };
+    });
+
+    const combined_total = students.reduce((sum, s) => sum + (s.total_amount || 0), 0);
+    const combined_outstanding = students.reduce((sum, s) => sum + (s.outstanding || 0), 0);
+
+    // Deterministic voucher reference: SVR-YYYYMM-<last6 of cnic>
+    const ym  = billing_month.replace('-', '');
+    const ref = `SVR-${ym}-${father_cnic.replace(/\D/g, '').slice(-6)}`;
+
+    res.json({
+      success: true,
+      voucher: {
+        voucher_ref:          ref,
+        father_cnic:          father_cnic,
+        father_name:          siblings[0].father_name || '',
+        billing_month:        billing_month,
+        students,
+        combined_total:       parseFloat(combined_total.toFixed(2)),
+        combined_outstanding: parseFloat(combined_outstanding.toFixed(2)),
+      },
+    });
+  } catch (err) { serverErr(res, err); }
+};
+
 module.exports = {
   getFeeHeads, createFeeHead, updateFeeHead, deleteFeeHead,
   getFeeStructures, upsertFeeStructure, deleteFeeStructure,
@@ -1669,4 +1882,5 @@ module.exports = {
   bulkRecordPayments, getChallanPrint,
   getPaymentImportTemplate, importFeePayments, exportFeesExcel,
   sendFeeReminders,
+  getSiblingGroups, getSiblingVoucher,
 };

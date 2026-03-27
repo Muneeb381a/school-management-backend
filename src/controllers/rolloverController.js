@@ -47,7 +47,7 @@ const bulkPromote = async (req, res) => {
 
     await client.query('BEGIN');
 
-    const inserted = [];
+    const results = [];
     for (const rec of records) {
       const { student_id, from_class_id, to_class_id, action, notes } = rec;
 
@@ -56,31 +56,47 @@ const bulkPromote = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Each record needs student_id and action' });
       }
 
-      // Update student's class if promoted
+      // Update student's class and status based on action
       if (action === 'promoted' && to_class_id) {
         await client.query(
           'UPDATE students SET class_id=$1 WHERE id=$2',
           [to_class_id, student_id],
         );
+      } else if (action === 'graduated') {
+        await client.query(
+          "UPDATE students SET status='graduated' WHERE id=$1",
+          [student_id],
+        );
       }
 
-      // Insert promotion record
+      // Upsert promotion record — idempotent: re-running the wizard updates instead of duplicating
       const { rows } = await client.query(
         `INSERT INTO promotion_records
            (from_academic_year, to_academic_year, from_class_id, to_class_id,
             student_id, action, promoted_by, notes)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (student_id, from_academic_year, to_academic_year)
+         DO UPDATE SET
+           action       = EXCLUDED.action,
+           to_class_id  = EXCLUDED.to_class_id,
+           promoted_by  = EXCLUDED.promoted_by,
+           notes        = EXCLUDED.notes,
+           promoted_at  = NOW()
+         RETURNING *, (xmax = 0) AS is_new`,
         [from_year, to_year, from_class_id || null, to_class_id || null,
          student_id, action, promoted_by || null, notes || null],
       );
-      inserted.push(rows[0]);
+      results.push(rows[0]);
     }
+
+    const newCount     = results.filter(r => r.is_new).length;
+    const updatedCount = results.length - newCount;
 
     await client.query('COMMIT');
     res.status(201).json({
       success: true,
-      data: inserted,
-      message: `${inserted.length} student(s) processed`,
+      data: results,
+      message: `${results.length} student(s) processed (${newCount} new, ${updatedCount} updated)`,
     });
   } catch (err) {
     await client.query('ROLLBACK');
