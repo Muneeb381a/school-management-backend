@@ -1,4 +1,4 @@
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID } = require('crypto');
 
 /**
  * Assigns a unique X-Request-ID to every request.
@@ -6,7 +6,7 @@ const { v4: uuidv4 } = require('uuid');
  * - Attaches the ID to `req.id` and echoes it in the response header.
  */
 function requestId(req, res, next) {
-  const id = req.headers['x-request-id'] || uuidv4();
+  const id = req.headers['x-request-id'] || randomUUID();
   req.id = id;
   res.setHeader('X-Request-ID', id);
   next();

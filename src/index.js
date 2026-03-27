@@ -27,11 +27,14 @@ const { verifyToken, requireRole, requirePasswordChanged } = require('./middlewa
 const errorHandler                   = require('./middleware/errorHandler');
 const { getAuditLogs }               = require('./middleware/auditLog');
 const requestId                      = require('./middleware/requestId');
-const { startScheduler }             = require('./utils/scheduler');
-const { getQueue, work, stop: stopQueue } = require('./jobs/queue');
-const { processStudentImport }       = require('./jobs/processors/csvImportProcessor');
-const { processBulkEmail }           = require('./jobs/processors/emailProcessor');
-const jobRoutes                      = require('./routes/jobRoutes');
+const { startScheduler } = require('./utils/scheduler');
+// pg-boss v12 is ESM-only — skip job queue on Vercel serverless (background jobs unsupported)
+const { getQueue, work, stop: stopQueue } = process.env.VERCEL
+  ? { getQueue: async () => {}, work: async () => {}, stop: async () => {} }
+  : require('./jobs/queue');
+const { processStudentImport } = process.env.VERCEL ? {} : require('./jobs/processors/csvImportProcessor');
+const { processBulkEmail }     = process.env.VERCEL ? {} : require('./jobs/processors/emailProcessor');
+const jobRoutes = process.env.VERCEL ? require('express').Router() : require('./routes/jobRoutes');
 
 const studentRoutes      = require('./routes/studentRoutes');
 const classRoutes        = require('./routes/classRoutes');
