@@ -1,3 +1,8 @@
+// ── Crash trap (must be first — catches any startup error on Vercel) ──────────
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err.message, err.stack);
+});
+
 // ── Startup validation (crashes early if env vars are missing) ────────────────
 require('dotenv').config();
 const validateEnv = require('./utils/validateEnv');

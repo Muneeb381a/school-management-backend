@@ -5,7 +5,8 @@ const pino = require('pino');
 // ---------------------------------------------------------------------------
 // Base logger
 // ---------------------------------------------------------------------------
-const isDev = process.env.NODE_ENV !== 'production';
+// Never use pino-pretty on Vercel (worker threads unavailable) or in production
+const isDev = process.env.NODE_ENV !== 'production' && !process.env.VERCEL;
 
 const transport = isDev
   ? {

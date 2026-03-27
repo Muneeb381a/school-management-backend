@@ -5,16 +5,16 @@ require('dotenv').config();
 const dbUrl = process.env.DATABASE_URL || '';
 const isLocal = dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1');
 
+const isServerless = !!process.env.VERCEL;
+
 const pool = new Pool({
   connectionString: dbUrl,
-  ...(isLocal ? {} : { ssl: { rejectUnauthorized: true } }),
+  ...(isLocal ? {} : { ssl: { rejectUnauthorized: false } }),
 
-  // Pool tuning — sensible defaults for a single-server school management app.
-  // Neon serverless free tier: keep max low to avoid connection exhaustion.
-  max: parseInt(process.env.DB_POOL_MAX  || '10', 10),  // max concurrent clients
-  min: parseInt(process.env.DB_POOL_MIN  || '2',  10),  // keep-alive baseline
-  idleTimeoutMillis:    30_000,   // close idle clients after 30 s
-  connectionTimeoutMillis: 5_000, // fail fast if no client available in 5 s
+  max: parseInt(process.env.DB_POOL_MAX || (isServerless ? '5' : '10'), 10),
+  min: 0,   // 0 for serverless — don't pre-connect on cold start
+  idleTimeoutMillis:       isServerless ? 10_000 : 30_000,
+  connectionTimeoutMillis: 8_000,
 });
 
 // Slow-query logger — logs any query taking longer than DB_SLOW_MS (default 500 ms)
