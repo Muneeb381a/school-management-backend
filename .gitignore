@@ -8,3 +8,4 @@ dist/
 
 src/db/migrations/
 src/db/migrate.js
+.vercel

@@ -314,46 +314,48 @@ app.use((_req, res) => res.status(404).json({ success: false, message: 'Route no
 app.use(errorHandler);
 
 // ── 13. Start server + background scheduler + job queue ───────────────────────
+// Skip listen() on Vercel — it uses module.exports = app as the serverless handler.
+// Vercel automatically sets process.env.VERCEL = '1' in all serverless deployments.
 const PORT = process.env.PORT || 5000;
-const server = app.listen(PORT, '0.0.0.0', async () => {
-  logger.info({ port: PORT }, `🚀  Server running at http://localhost:${PORT}`);
-  startScheduler();
+if (!process.env.VERCEL) {
+  const server = app.listen(PORT, '0.0.0.0', async () => {
+    logger.info({ port: PORT }, `🚀  Server running at http://localhost:${PORT}`);
+    startScheduler();
 
-  // Initialize pg-boss job queue and register workers
-  try {
-    await getQueue();
-    await work('csv-import-students', processStudentImport);
-    await work('bulk-email', processBulkEmail);
-  } catch (err) {
-    logger.warn({ err: err.message }, '[queue] Failed to start job queue — continuing without it');
-  }
-});
-
-// ── 14. Graceful shutdown ─────────────────────────────────────────────────────
-const shutdown = (signal) => {
-  logger.info({ signal }, 'Graceful shutdown initiated…');
-  server.close(async () => {
-    logger.info('HTTP server closed.');
-    try { await stopQueue(); } catch { /* best effort */ }
     try {
-      const pool = require('./db');
-      await pool.end();
-      logger.info('DB pool closed.');
+      await getQueue();
+      await work('csv-import-students', processStudentImport);
+      await work('bulk-email', processBulkEmail);
     } catch (err) {
-      logger.error({ err: err.message }, 'Error closing DB pool');
+      logger.warn({ err: err.message }, '[queue] Failed to start job queue — continuing without it');
     }
-    process.exit(0);
   });
 
-  // Force exit if it takes too long
-  setTimeout(() => {
-    logger.error('Forced exit after 10 s timeout.');
-    process.exit(1);
-  }, 10_000);
-};
+  // ── 14. Graceful shutdown ─────────────────────────────────────────────────
+  const shutdown = (signal) => {
+    logger.info({ signal }, 'Graceful shutdown initiated…');
+    server.close(async () => {
+      logger.info('HTTP server closed.');
+      try { await stopQueue(); } catch { /* best effort */ }
+      try {
+        const pool = require('./db');
+        await pool.end();
+        logger.info('DB pool closed.');
+      } catch (err) {
+        logger.error({ err: err.message }, 'Error closing DB pool');
+      }
+      process.exit(0);
+    });
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT',  () => shutdown('SIGINT'));
+    setTimeout(() => {
+      logger.error('Forced exit after 10 s timeout.');
+      process.exit(1);
+    }, 10_000);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT',  () => shutdown('SIGINT'));
+}
 
 // Catch unhandled promise rejections — log and continue (don't crash)
 process.on('unhandledRejection', (reason) => {
@@ -361,5 +363,4 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // ── 15. Export for Vercel serverless ─────────────────────────────────────────
-// Vercel uses module.exports as the request handler instead of app.listen()
 module.exports = app;
