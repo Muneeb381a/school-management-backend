@@ -136,7 +136,7 @@ const generateMonthlySalaries = async (req, res) => {
       const net        = gross - totalDed;
 
       cols.teacherIds.push(t.id);
-      cols.months.push(`${month}-01`);
+      cols.months.push(month);           // store as YYYY-MM to match VARCHAR(7) column
       cols.baseSalaries.push(base);
       cols.houseAllowances.push(house);
       cols.medAllowances.push(med);
@@ -160,7 +160,7 @@ const generateMonthlySalaries = async (req, res) => {
            income_tax, other_deduction, absent_days, attendance_deduction,
            total_deductions, net_salary)
         SELECT * FROM UNNEST(
-          $1::int[], $2::date[], $3::numeric[], $4::numeric[], $5::numeric[],
+          $1::int[], $2::varchar[], $3::numeric[], $4::numeric[], $5::numeric[],
           $6::numeric[], $7::numeric[], $8::numeric[],
           $9::numeric[], $10::numeric[], $11::int[], $12::numeric[],
           $13::numeric[], $14::numeric[]
