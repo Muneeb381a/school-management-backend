@@ -359,3 +359,7 @@ process.on('SIGINT',  () => shutdown('SIGINT'));
 process.on('unhandledRejection', (reason) => {
   logger.error({ err: reason }, 'Unhandled promise rejection');
 });
+
+// ── 15. Export for Vercel serverless ─────────────────────────────────────────
+// Vercel uses module.exports as the request handler instead of app.listen()
+module.exports = app;
