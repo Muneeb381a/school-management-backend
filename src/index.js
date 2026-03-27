@@ -110,6 +110,7 @@ const corsOptions = {
     'http://localhost:8081',
     'http://localhost:19006',
     'https://studentmanagement-frontend-six.vercel.app',
+    'https://frontend-liart-five-45.vercel.app',
     /^http:\/\/192\.168\./,
     /^http:\/\/10\./,
     /^exp:\/\//,
