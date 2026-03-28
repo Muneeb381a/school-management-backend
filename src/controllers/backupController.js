@@ -44,6 +44,15 @@ const BACKUP_TABLES = [
   'book_issues',
   'inventory_categories',
   'inventory_items',
+  // Salary
+  'salary_structures',
+  'salary_policies',
+  // Exams & marks
+  'exam_subjects',
+  'student_marks',
+  // Non-teaching staff
+  'staff',
+  'staff_attendance',
   // Misc
   'notifications',
   'student_documents',
@@ -62,13 +71,18 @@ const exportBackup = async (req, res) => {
       tables:      {},
     };
 
-    for (const table of BACKUP_TABLES) {
-      try {
-        const { rows } = await pool.query(`SELECT * FROM "${table}" ORDER BY id`);
-        backup.tables[table] = rows;
-      } catch {
-        // Table may not exist yet (migration not run) — skip silently
-        backup.tables[table] = [];
+    const results = await Promise.allSettled(
+      BACKUP_TABLES.map(table =>
+        pool.query(`SELECT * FROM "${table}" ORDER BY id`).then(r => ({ table, rows: r.rows }))
+      )
+    );
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        backup.tables[result.value.table] = result.value.rows;
+      } else {
+        // Extract table name from rejected promise meta — fall back to empty
+        const idx = results.indexOf(result);
+        backup.tables[BACKUP_TABLES[idx]] = [];
       }
     }
 

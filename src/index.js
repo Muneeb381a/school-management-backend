@@ -77,6 +77,7 @@ const quizRoutes              = require('./routes/quizRoutes');
 const pushRoutes              = require('./routes/pushRoutes');
 const paperRoutes             = require('./routes/paperRoutes');
 const onlineClassRoutes       = require('./routes/onlineClassRoutes');
+const staffRoutes             = require('./routes/staffRoutes');
 
 const app = express();
 
@@ -119,6 +120,7 @@ const corsOptions = {
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
+  exposedHeaders: ['Content-Disposition'],
 };
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
@@ -308,6 +310,7 @@ const routeMap = [
   ['/push',                 pushRoutes],
   ['/papers',               paperRoutes],
   ['/online-classes',       onlineClassRoutes],
+  ['/staff',                staffRoutes],
 ];
 
 for (const [path, router] of routeMap) {

@@ -4,6 +4,7 @@ const {
   getSalaryStructures, getTeacherSalaryStructure, upsertSalaryStructure,
   getSalaryPayments, generateMonthlySalaries, updateSalaryPayment, markSalaryPaid, getSalarySlip,
   bulkMarkSalaryPaid, exportSalary, getMySlips,
+  getSalaryPolicy, updateSalaryPolicy,
 } = require('../controllers/salaryController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
@@ -27,5 +28,9 @@ router.get('/payments/my',               requireRole('teacher'),          getMyS
 router.get('/payments/:id',              requireRole('admin', 'teacher'), getSalarySlip);   // own slip
 router.put('/payments/:id',              requireRole('admin'),            updateSalaryPayment);
 router.post('/payments/:id/mark-paid',   requireRole('admin'),            markSalaryPaid);
+
+// ── Salary Policy ─────────────────────────────────────────────
+router.get('/policy', requireRole('admin'), getSalaryPolicy);
+router.put('/policy', requireRole('admin'), updateSalaryPolicy);
 
 module.exports = router;

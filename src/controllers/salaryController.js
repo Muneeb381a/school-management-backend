@@ -80,11 +80,18 @@ const getSalaryPayments = async (req, res) => {
 };
 
 // Generate salary slips for all active teachers for a given month
-// Auto-calculates attendance deduction: absent_days × (base_salary / 26)
+// Deductions: leave_deduction (excess absences) + late_deduction (late arrivals converted to leaves)
 const generateMonthlySalaries = async (req, res) => {
   const { month } = req.body;
   if (!month) return res.status(400).json({ success: false, message: 'month required (YYYY-MM)' });
   try {
+    // Load school-wide payroll policy (seed row id=1 always exists after migration 054)
+    const { rows: policyRows } = await pool.query('SELECT * FROM salary_policies WHERE id = 1');
+    const policy = policyRows[0] || { allowed_leaves_per_month: 2, late_arrivals_per_leave: 3, working_days_basis: 26 };
+    const allowedFree   = parseInt(policy.allowed_leaves_per_month);
+    const latesPerLeave = parseInt(policy.late_arrivals_per_leave);
+    const workingDays   = parseInt(policy.working_days_basis);
+
     // Get all active teachers + their salary structures
     const { rows: teachers } = await pool.query(`
       SELECT t.id, t.full_name, ss.*
@@ -93,31 +100,32 @@ const generateMonthlySalaries = async (req, res) => {
       WHERE t.status = 'active'
     `);
 
-    // Get absence counts for all teachers this month in one query
+    // Single query: count absent + late days per teacher this month
     const startDate = `${month}-01`;
     const endDate   = new Date(new Date(startDate).getFullYear(), new Date(startDate).getMonth() + 1, 0)
       .toISOString().slice(0, 10);
 
-    const { rows: absenceRows } = await pool.query(
-      `SELECT entity_id AS teacher_id, COUNT(*)::int AS absent_days
+    const { rows: attRows } = await pool.query(
+      `SELECT entity_id AS teacher_id,
+              COUNT(*) FILTER (WHERE status = 'absent')::int AS absent_days,
+              COUNT(*) FILTER (WHERE status = 'late')::int   AS late_days
        FROM attendance
        WHERE entity_type = 'teacher'
-         AND status = 'absent'
          AND date BETWEEN $1 AND $2
          AND period_id IS NULL
        GROUP BY entity_id`,
       [startDate, endDate]
     );
-    const absenceMap = {};
-    absenceRows.forEach(r => { absenceMap[r.teacher_id] = r.absent_days; });
+    const attMap = {};
+    attRows.forEach(r => { attMap[r.teacher_id] = { absent_days: r.absent_days, late_days: r.late_days }; });
 
     // Build arrays for batch UNNEST insert (1 round-trip instead of N)
     const cols = {
       teacherIds: [], months: [],
       baseSalaries: [], houseAllowances: [], medAllowances: [],
       transportAllowances: [], otherAllowances: [], grossSalaries: [],
-      incomeTaxes: [], otherDeductions: [], absentDaysArr: [],
-      attDeductions: [], totalDeductions: [], netSalaries: [],
+      incomeTaxes: [], otherDeductions: [], absentDaysArr: [], lateDaysArr: [],
+      attDeductions: [], lateDedArr: [], totalDeductions: [], netSalaries: [],
     };
 
     for (const t of teachers) {
@@ -130,11 +138,20 @@ const generateMonthlySalaries = async (req, res) => {
       const tax   = parseFloat(t.income_tax          || 0);
       const otDed = parseFloat(t.other_deduction     || 0);
 
-      const absentDays = absenceMap[t.id] || 0;
-      const perDayRate = base > 0 ? parseFloat((base / 26).toFixed(2)) : 0;
-      const attDed     = parseFloat((absentDays * perDayRate).toFixed(2));
-      const totalDed   = tax + otDed + attDed;
-      const net        = gross - totalDed;
+      const att        = attMap[t.id] || { absent_days: 0, late_days: 0 };
+      const absentDays = att.absent_days;
+      const lateDays   = att.late_days;
+      const perDayRate = base > 0 ? base / workingDays : 0;
+
+      // Leave deduction: only excess absences beyond allowed free days
+      const leaveDed = Math.max(0, absentDays - allowedFree) * perDayRate;
+      // Late deduction: every N late arrivals = 1 day deduction
+      const lateDed  = latesPerLeave > 0 ? Math.floor(lateDays / latesPerLeave) * perDayRate : 0;
+      const attDed   = parseFloat((leaveDed + lateDed).toFixed(2));
+      const lateDedR = parseFloat(lateDed.toFixed(2));
+
+      const totalDed = parseFloat((tax + otDed + attDed).toFixed(2));
+      const net      = parseFloat((gross - totalDed).toFixed(2));
 
       cols.teacherIds.push(t.id);
       cols.months.push(month);           // store as YYYY-MM to match VARCHAR(7) column
@@ -147,7 +164,9 @@ const generateMonthlySalaries = async (req, res) => {
       cols.incomeTaxes.push(tax);
       cols.otherDeductions.push(otDed);
       cols.absentDaysArr.push(absentDays);
+      cols.lateDaysArr.push(lateDays);
       cols.attDeductions.push(attDed);
+      cols.lateDedArr.push(lateDedR);
       cols.totalDeductions.push(totalDed);
       cols.netSalaries.push(net);
     }
@@ -158,24 +177,28 @@ const generateMonthlySalaries = async (req, res) => {
         INSERT INTO salary_payments
           (teacher_id, month, base_salary, house_allowance, medical_allowance,
            transport_allowance, other_allowance, gross_salary,
-           income_tax, other_deduction, absent_days, attendance_deduction,
+           income_tax, other_deduction, absent_days, late_days,
+           attendance_deduction, late_deduction,
            total_deductions, net_salary)
         SELECT * FROM UNNEST(
           $1::int[], $2::varchar[], $3::numeric[], $4::numeric[], $5::numeric[],
           $6::numeric[], $7::numeric[], $8::numeric[],
-          $9::numeric[], $10::numeric[], $11::int[], $12::numeric[],
-          $13::numeric[], $14::numeric[]
+          $9::numeric[], $10::numeric[], $11::int[], $12::int[],
+          $13::numeric[], $14::numeric[],
+          $15::numeric[], $16::numeric[]
         ) AS t(teacher_id, month, base_salary, house_allowance, medical_allowance,
                transport_allowance, other_allowance, gross_salary,
-               income_tax, other_deduction, absent_days, attendance_deduction,
+               income_tax, other_deduction, absent_days, late_days,
+               attendance_deduction, late_deduction,
                total_deductions, net_salary)
         ON CONFLICT (teacher_id, month) DO NOTHING
       `, [
         cols.teacherIds, cols.months,
         cols.baseSalaries, cols.houseAllowances, cols.medAllowances,
         cols.transportAllowances, cols.otherAllowances, cols.grossSalaries,
-        cols.incomeTaxes, cols.otherDeductions, cols.absentDaysArr,
-        cols.attDeductions, cols.totalDeductions, cols.netSalaries,
+        cols.incomeTaxes, cols.otherDeductions, cols.absentDaysArr, cols.lateDaysArr,
+        cols.attDeductions, cols.lateDedArr,
+        cols.totalDeductions, cols.netSalaries,
       ]);
       generated = rowCount;
     }
@@ -205,7 +228,8 @@ const updateSalaryPayment = async (req, res) => {
     const otDed    = parseFloat(other_deduction   ?? p.other_deduction);
     const taxDed   = parseFloat(p.income_tax);
     const attDed   = parseFloat(p.attendance_deduction || 0);
-    const totalDed = taxDed + advDed + fineDed + otDed + attDed;
+    const lateDed  = parseFloat(p.late_deduction       || 0);
+    const totalDed = parseFloat((taxDed + advDed + fineDed + otDed + attDed + lateDed).toFixed(2));
     const net      = parseFloat(p.gross_salary) - totalDed;
 
     const { rows: updated } = await pool.query(`
@@ -296,8 +320,12 @@ const exportSalary = async (req, res, next) => {
     if (month) { params.push(month); where += ` AND sp.month = $${params.length}`; }
 
     const { rows } = await pool.query(
-      `SELECT t.full_name, t.subject, sp.month, sp.basic_salary,
-              sp.allowances, sp.deductions, sp.net_salary, sp.status,
+      `SELECT t.full_name, t.subject, sp.month,
+              sp.base_salary,
+              (sp.house_allowance + sp.medical_allowance + sp.transport_allowance + sp.other_allowance) AS allowances,
+              sp.absent_days, sp.late_days,
+              sp.attendance_deduction, sp.late_deduction,
+              sp.total_deductions, sp.net_salary, sp.status,
               sp.payment_date, sp.remarks
        FROM salary_payments sp
        JOIN teachers t ON t.id = sp.teacher_id
@@ -311,16 +339,20 @@ const exportSalary = async (req, res, next) => {
         sheetName: 'Salary',
         subtitle:  `Total: ${rows.length} records | Net Payable: PKR ${rows.reduce((s,r) => s + Number(r.net_salary || 0), 0).toLocaleString()}`,
         columns: [
-          { key: 'full_name',    header: 'Teacher Name',   width: 22 },
-          { key: 'subject',      header: 'Subject',        width: 16 },
-          { key: 'month',        header: 'Month',          width: 12 },
-          { key: 'basic_salary', header: 'Basic Salary',   width: 14, numFmt: '#,##0.00' },
-          { key: 'allowances',   header: 'Allowances',     width: 13, numFmt: '#,##0.00' },
-          { key: 'deductions',   header: 'Deductions',     width: 13, numFmt: '#,##0.00' },
-          { key: 'net_salary',   header: 'Net Salary',     width: 14, numFmt: '#,##0.00' },
-          { key: 'status',       header: 'Status',         width: 10 },
-          { key: 'payment_date', header: 'Payment Date',   width: 14 },
-          { key: 'remarks',      header: 'Remarks',        width: 20 },
+          { key: 'full_name',            header: 'Teacher Name',        width: 22 },
+          { key: 'subject',              header: 'Subject',             width: 16 },
+          { key: 'month',                header: 'Month',               width: 12 },
+          { key: 'base_salary',          header: 'Base Salary',         width: 14, numFmt: '#,##0.00' },
+          { key: 'allowances',           header: 'Allowances',          width: 13, numFmt: '#,##0.00' },
+          { key: 'absent_days',          header: 'Absent Days',         width: 12 },
+          { key: 'late_days',            header: 'Late Days',           width: 11 },
+          { key: 'attendance_deduction', header: 'Leave Deduction',     width: 16, numFmt: '#,##0.00' },
+          { key: 'late_deduction',       header: 'Late Deduction',      width: 15, numFmt: '#,##0.00' },
+          { key: 'total_deductions',     header: 'Total Deductions',    width: 16, numFmt: '#,##0.00' },
+          { key: 'net_salary',           header: 'Net Salary',          width: 14, numFmt: '#,##0.00' },
+          { key: 'status',               header: 'Status',              width: 10 },
+          { key: 'payment_date',         header: 'Payment Date',        width: 14 },
+          { key: 'remarks',              header: 'Remarks',             width: 20 },
         ],
         rows,
       });
@@ -328,10 +360,13 @@ const exportSalary = async (req, res, next) => {
     }
 
     const q   = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const hdr = ['Teacher','Subject','Month','Basic','Allowances','Deductions','Net Salary','Status','Payment Date'];
+    const hdr = ['Teacher','Subject','Month','Base Salary','Allowances','Absent Days','Late Days',
+                 'Leave Deduction','Late Deduction','Total Deductions','Net Salary','Status','Payment Date'];
     const csv = [hdr, ...rows.map(r => [
-      r.full_name, r.subject, r.month, r.basic_salary,
-      r.allowances, r.deductions, r.net_salary, r.status,
+      r.full_name, r.subject, r.month, r.base_salary,
+      r.allowances, r.absent_days, r.late_days,
+      r.attendance_deduction, r.late_deduction,
+      r.total_deductions, r.net_salary, r.status,
       r.payment_date?.toString().slice(0,10),
     ].map(q))].map(row => row.join(',')).join('\n');
 
@@ -361,8 +396,34 @@ const getMySlips = async (req, res) => {
   }
 };
 
+// ── Salary Policy ─────────────────────────────────────────────
+
+const getSalaryPolicy = async (_req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM salary_policies WHERE id = 1');
+    res.json({ success: true, data: rows[0] || null });
+  } catch (err) { serverErr(res, err); }
+};
+
+const updateSalaryPolicy = async (req, res) => {
+  try {
+    const { allowed_leaves_per_month, late_arrivals_per_leave, working_days_basis } = req.body;
+    const { rows } = await pool.query(`
+      UPDATE salary_policies SET
+        allowed_leaves_per_month = COALESCE($1, allowed_leaves_per_month),
+        late_arrivals_per_leave  = COALESCE($2, late_arrivals_per_leave),
+        working_days_basis       = COALESCE($3, working_days_basis),
+        updated_at               = NOW()
+      WHERE id = 1 RETURNING *
+    `, [allowed_leaves_per_month ?? null, late_arrivals_per_leave ?? null, working_days_basis ?? null]);
+    if (!rows[0]) return res.status(404).json({ success: false, message: 'Policy not found — run migration 054' });
+    res.json({ success: true, data: rows[0], message: 'Salary policy updated' });
+  } catch (err) { serverErr(res, err); }
+};
+
 module.exports = {
   getSalaryStructures, getTeacherSalaryStructure, upsertSalaryStructure,
   getSalaryPayments, generateMonthlySalaries, updateSalaryPayment, markSalaryPaid, getSalarySlip,
   bulkMarkSalaryPaid, exportSalary, getMySlips,
+  getSalaryPolicy, updateSalaryPolicy,
 };

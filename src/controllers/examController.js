@@ -817,6 +817,182 @@ const getStudentPerformance = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════════════════════
+//  PDF REPORT CARD GENERATOR
+// ══════════════════════════════════════════════════════════════
+
+// GET /api/exams/:examId/results/student/:studentId/pdf
+// Streams a single-student report card as a downloadable PDF.
+const downloadStudentReportCardPDF = async (req, res) => {
+  try {
+    const { examId, studentId } = req.params;
+
+    const { rows: subjects } = await pool.query(
+      `SELECT
+         s.name                AS subject_name,
+         s.code                AS subject_code,
+         es.total_marks,
+         es.passing_marks,
+         sm.obtained_marks,
+         sm.is_absent,
+         sm.remarks,
+         ROUND(sm.obtained_marks / NULLIF(es.total_marks,0) * 100, 2)   AS subject_percentage,
+         CASE WHEN sm.is_absent THEN NULL
+              ELSE calculate_grade(
+                ROUND(sm.obtained_marks / NULLIF(es.total_marks,0) * 100, 2)
+              )
+         END                                                             AS subject_grade,
+         CASE WHEN sm.is_absent THEN 'absent'
+              WHEN sm.obtained_marks >= es.passing_marks THEN 'pass'
+              ELSE 'fail' END                                            AS subject_status
+       FROM student_marks sm
+       JOIN subjects      s  ON s.id  = sm.subject_id
+       JOIN exam_subjects es ON es.exam_id    = sm.exam_id
+                             AND es.class_id   = sm.class_id
+                             AND es.subject_id = sm.subject_id
+       WHERE sm.exam_id = $1 AND sm.student_id = $2
+       ORDER BY s.name`,
+      [examId, studentId]
+    );
+
+    if (subjects.length === 0)
+      return res.status(404).json({ success: false, message: 'No marks found for this student in this exam' });
+
+    const { rows: summary } = await pool.query(
+      `SELECT
+         rs.*,
+         st.full_name, st.roll_number, st.father_name,
+         c.name AS class_name, c.grade, c.section,
+         e.exam_name, e.exam_type, e.academic_year, e.start_date, e.end_date,
+         (SELECT COUNT(*)::int FROM result_summary
+          WHERE exam_id = $1 AND class_id = rs.class_id)               AS total_students,
+         (SELECT COUNT(*)::int + 1 FROM result_summary
+          WHERE exam_id = $1 AND class_id = rs.class_id
+            AND percentage > rs.percentage)                             AS position
+       FROM result_summary rs
+       JOIN students st ON st.id = rs.student_id
+       JOIN classes  c  ON c.id  = rs.class_id
+       JOIN exams    e  ON e.id  = rs.exam_id
+       WHERE rs.exam_id = $1 AND rs.student_id = $2`,
+      [examId, studentId]
+    );
+
+    const { rows: settingsRows } = await pool.query(
+      `SELECT key, value FROM settings WHERE key IN
+       ('school_name','school_address','school_phone','school_email','school_logo','currency')`
+    );
+    const settings = {};
+    settingsRows.forEach(r => { settings[r.key] = r.value; });
+
+    const { createReportCardPDF } = require('../utils/reportCardPDF');
+    const doc = createReportCardPDF([{ summary: summary[0] || null, subjects, settings }]);
+
+    const name = (summary[0]?.full_name || `student-${studentId}`).replace(/\s+/g, '_');
+    const filename = `report-card_${name}_exam-${examId}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    doc.pipe(res);
+  } catch (err) {
+    return serverErr(res, err);
+  }
+};
+
+// GET /api/exams/:examId/results/class/:classId/report-cards/pdf
+// Streams a PDF with one page per student in the class.
+const downloadClassReportCardsPDF = async (req, res) => {
+  try {
+    const { examId, classId } = req.params;
+
+    const { rows: examRows } = await pool.query(
+      `SELECT exam_name, exam_type, academic_year, start_date, end_date FROM exams WHERE id = $1`,
+      [examId]
+    );
+    if (!examRows[0]) return res.status(404).json({ success: false, message: 'Exam not found' });
+
+    const { rows: results } = await pool.query(
+      `SELECT
+         rs.student_id,
+         rs.total_marks, rs.obtained_marks, rs.percentage, rs.grade, rs.result_status,
+         RANK() OVER (ORDER BY rs.percentage DESC)                                          AS position,
+         (SELECT COUNT(*)::int FROM result_summary WHERE exam_id=$1 AND class_id=$2)        AS total_students,
+         st.full_name, st.roll_number, st.father_name,
+         c.name AS class_name, c.grade AS class_grade, c.section
+       FROM result_summary rs
+       JOIN students st ON st.id = rs.student_id
+       JOIN classes  c  ON c.id  = rs.class_id
+       WHERE rs.exam_id = $1 AND rs.class_id = $2
+       ORDER BY rs.percentage DESC`,
+      [examId, classId]
+    );
+
+    if (results.length === 0)
+      return res.status(404).json({ success: false, message: 'No results found for this class' });
+
+    const { rows: allMarks } = await pool.query(
+      `SELECT
+         sm.student_id,
+         s.name  AS subject_name,
+         s.code  AS subject_code,
+         es.total_marks, es.passing_marks,
+         sm.obtained_marks, sm.remarks, sm.is_absent,
+         ROUND(sm.obtained_marks / NULLIF(es.total_marks,0) * 100, 2)              AS subject_percentage,
+         CASE WHEN sm.is_absent THEN NULL
+              ELSE calculate_grade(
+                ROUND(sm.obtained_marks / NULLIF(es.total_marks,0) * 100, 2)
+              )
+         END                                                                        AS subject_grade,
+         CASE WHEN sm.is_absent THEN 'absent'
+              WHEN sm.obtained_marks >= es.passing_marks THEN 'pass'
+              ELSE 'fail' END                                                       AS subject_status
+       FROM student_marks sm
+       JOIN subjects      s  ON s.id  = sm.subject_id
+       JOIN exam_subjects es ON es.exam_id    = sm.exam_id
+                             AND es.class_id   = sm.class_id
+                             AND es.subject_id = sm.subject_id
+       WHERE sm.exam_id = $1 AND sm.class_id = $2
+       ORDER BY sm.student_id, s.name`,
+      [examId, classId]
+    );
+
+    const marksMap = {};
+    allMarks.forEach(m => {
+      if (!marksMap[m.student_id]) marksMap[m.student_id] = [];
+      marksMap[m.student_id].push(m);
+    });
+
+    const { rows: settingsRows } = await pool.query(
+      `SELECT key, value FROM settings WHERE key IN
+       ('school_name','school_address','school_phone','school_email','school_logo','currency')`
+    );
+    const settings = {};
+    settingsRows.forEach(r => { settings[r.key] = r.value; });
+
+    const cards = results.map(r => ({
+      summary: {
+        ...r,
+        exam_name:     examRows[0].exam_name,
+        exam_type:     examRows[0].exam_type,
+        academic_year: examRows[0].academic_year,
+        start_date:    examRows[0].start_date,
+        end_date:      examRows[0].end_date,
+      },
+      subjects: marksMap[r.student_id] || [],
+      settings,
+    }));
+
+    const { createReportCardPDF } = require('../utils/reportCardPDF');
+    const doc = createReportCardPDF(cards);
+
+    const className = (results[0]?.class_name || `class-${classId}`).replace(/\s+/g, '_');
+    const filename  = `report-cards_${className}_exam-${examId}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    doc.pipe(res);
+  } catch (err) {
+    return serverErr(res, err);
+  }
+};
+
+// ══════════════════════════════════════════════════════════════
 //  DATE SHEET
 // ══════════════════════════════════════════════════════════════
 
@@ -987,6 +1163,9 @@ module.exports = {
   getClassRanking,
   getClassReportCards,
   getStudentPerformance,
+  // PDF Downloads
+  downloadStudentReportCardPDF,
+  downloadClassReportCardsPDF,
   // Date Sheet
   getDateSheet,
   updateDateSheet,

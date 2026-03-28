@@ -15,8 +15,12 @@
   },
   "jest": {
     "testEnvironment": "node",
-    "testMatch": ["**/tests/**/*.test.js"],
-    "setupFiles": ["./tests/setup.js"],
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ],
+    "setupFiles": [
+      "./tests/setup.js"
+    ],
     "testTimeout": 30000,
     "verbose": true
   },
@@ -35,6 +39,7 @@
     "morgan": "^1.10.1",
     "multer": "^2.1.1",
     "nodemailer": "^8.0.3",
+    "pdfkit": "^0.18.0",
     "pg": "^8.11.5",
     "pg-boss": "^12.14.0",
     "pino": "^10.3.1",

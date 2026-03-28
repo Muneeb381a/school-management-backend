@@ -21,6 +21,8 @@ const {
   getClassRanking,
   getClassReportCards,
   getStudentPerformance,
+  downloadStudentReportCardPDF,
+  downloadClassReportCardsPDF,
   getDateSheet,
   updateDateSheet,
 } = require('../controllers/examController');
@@ -61,8 +63,10 @@ router.patch('/:examId/date-sheet', requireRole('admin'),            updateDateS
 // ── Results ───────────────────────────────────────────────────
 router.post('/:examId/calculate-results',                  requireRole('admin'),            calculateResults);
 router.get('/:examId/results',                             requireRole('admin', 'teacher'), getResults);
-router.get('/:examId/results/student/:studentId',          requireRole('admin', 'teacher'), getStudentReportCard);
-router.get('/:examId/results/class/:classId/ranking',      requireRole('admin', 'teacher'), getClassRanking);
-router.get('/:examId/results/class/:classId/report-cards', requireRole('admin', 'teacher'), getClassReportCards);
+router.get('/:examId/results/student/:studentId',              requireRole('admin', 'teacher'), getStudentReportCard);
+router.get('/:examId/results/student/:studentId/pdf',          requireRole('admin', 'teacher'), downloadStudentReportCardPDF);
+router.get('/:examId/results/class/:classId/ranking',          requireRole('admin', 'teacher'), getClassRanking);
+router.get('/:examId/results/class/:classId/report-cards',     requireRole('admin', 'teacher'), getClassReportCards);
+router.get('/:examId/results/class/:classId/report-cards/pdf', requireRole('admin', 'teacher'), downloadClassReportCardsPDF);
 
 module.exports = router;

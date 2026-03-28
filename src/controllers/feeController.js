@@ -1,6 +1,6 @@
 const pool     = require('../db');
 const AppError = require('../utils/AppError');
-const { invalidateDashboard } = require('../utils/cache');
+const { invalidateDashboard, remember, del: cacheDelete } = require('../utils/cache');
 const { serverErr }        = require('../utils/serverErr');
 const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
 const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
@@ -88,19 +88,26 @@ const deleteFeeHead = async (req, res) => {
 const getFeeStructures = async (req, res) => {
   try {
     const { class_id, academic_year, category } = req.query;
-    let q = `
-      SELECT fs.*, fh.name AS fee_head_name, fh.category,
-             c.name AS class_name, c.grade, c.section
-      FROM fee_structures fs
-      JOIN fee_heads fh ON fh.id = fs.fee_head_id
-      LEFT JOIN classes c ON c.id = fs.class_id
-      WHERE 1=1`;
-    const p = [];
-    if (class_id)    { p.push(class_id);    q += ` AND fs.class_id=$${p.length}`; }
-    if (academic_year){ p.push(academic_year); q += ` AND fs.academic_year=$${p.length}`; }
-    if (category)    { p.push(category);    q += ` AND fh.category=$${p.length}`; }
-    q += ' ORDER BY c.grade, c.section, fh.sort_order, fh.name';
-    const { rows } = await pool.query(q, p);
+    const year = academic_year || '2024-25';
+    const cacheKey = `fee:structures:${class_id || 'all'}:${year}:${category || 'all'}`;
+
+    const rows = await remember(cacheKey, 300, async () => {
+      let q = `
+        SELECT fs.*, fh.name AS fee_head_name, fh.category,
+               c.name AS class_name, c.grade, c.section
+        FROM fee_structures fs
+        JOIN fee_heads fh ON fh.id = fs.fee_head_id
+        LEFT JOIN classes c ON c.id = fs.class_id
+        WHERE 1=1`;
+      const p = [];
+      if (class_id)   { p.push(class_id);  q += ` AND fs.class_id=$${p.length}`; }
+      if (year)       { p.push(year);       q += ` AND fs.academic_year=$${p.length}`; }
+      if (category)   { p.push(category);   q += ` AND fh.category=$${p.length}`; }
+      q += ' ORDER BY c.grade, c.section, fh.sort_order, fh.name';
+      const { rows } = await pool.query(q, p);
+      return rows;
+    });
+
     res.json({ success: true, data: rows, total: rows.length });
   } catch (err) { serverErr(res, err); }
 };
@@ -120,6 +127,7 @@ const upsertFeeStructure = async (req, res) => {
        RETURNING *`,
       [fee_head_id, class_id || null, grade || null, amount, year]
     );
+    await cacheDelete(`fee:structures:${rows[0].class_id || 'all'}:${rows[0].academic_year}:all`);
     res.status(201).json({ success: true, data: rows[0] });
   } catch (err) { serverErr(res, err); }
 };
@@ -127,9 +135,12 @@ const upsertFeeStructure = async (req, res) => {
 const deleteFeeStructure = async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'DELETE FROM fee_structures WHERE id=$1 RETURNING id', [req.params.id]
+      'DELETE FROM fee_structures WHERE id=$1 RETURNING id, class_id, academic_year', [req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Structure not found' });
+    // Broad invalidation since we don't know which keys exist
+    const { delPattern } = require('../utils/cache');
+    await delPattern('fee:structures:*');
     res.json({ success: true, message: 'Deleted' });
   } catch (err) { serverErr(res, err); }
 };

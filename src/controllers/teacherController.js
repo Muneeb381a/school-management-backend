@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const pool   = require('../db');
 const { invalidateDashboard } = require('../utils/cache');
+const { parsePagination, paginationMeta } = require('../utils/pagination');
 const { serverErr }         = require('../utils/serverErr');
 const { genTempPassword }   = require('../utils/genTempPassword');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
@@ -16,8 +17,23 @@ const notFound = (res) => res.status(404).json({ success: false, message: 'Teach
 const getTeachers = async (req, res) => {
   try {
     const { search, status } = req.query;
+    const { page, limit, offset } = parsePagination(req.query);
 
-    let query = `
+    let where = 'WHERE t.deleted_at IS NULL';
+    const params = [];
+
+    if (status) {
+      params.push(status);
+      where += ` AND t.status = $${params.length}`;
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      where += ` AND (t.full_name ILIKE $${params.length}
+                   OR t.email    ILIKE $${params.length}
+                   OR t.subject  ILIKE $${params.length})`;
+    }
+
+    const baseSelect = `
       SELECT
         t.*,
         MIN(u.id)                         AS user_id,
@@ -28,25 +44,19 @@ const getTeachers = async (req, res) => {
       LEFT JOIN teacher_classes tc ON tc.teacher_id = t.id
       LEFT JOIN classes          c  ON c.id = tc.class_id
       LEFT JOIN students         s  ON s.class_id = c.id
-      WHERE t.deleted_at IS NULL
-    `;
-    const params = [];
+      ${where}
+      GROUP BY t.id`;
 
-    if (status) {
-      params.push(status);
-      query += ` AND t.status = $${params.length}`;
-    }
-    if (search) {
-      params.push(`%${search}%`);
-      query += ` AND (t.full_name ILIKE $${params.length}
-                   OR t.email    ILIKE $${params.length}
-                   OR t.subject  ILIKE $${params.length})`;
-    }
+    const [countRes, dataRes] = await Promise.all([
+      pool.query(`SELECT COUNT(DISTINCT t.id) AS total FROM teachers t ${where}`, params),
+      pool.query(
+        `${baseSelect} ORDER BY t.full_name LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset]
+      ),
+    ]);
 
-    query += ' GROUP BY t.id ORDER BY t.full_name';
-
-    const { rows } = await pool.query(query, params);
-    res.json({ success: true, data: rows, total: rows.length });
+    const total = parseInt(countRes.rows[0].total, 10);
+    res.json({ success: true, data: dataRes.rows, meta: paginationMeta(total, page, limit) });
   } catch (err) { serverErr(res, err); }
 };
 

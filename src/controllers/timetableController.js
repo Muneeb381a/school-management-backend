@@ -1,4 +1,5 @@
-const pool = require('../db');
+const pool  = require('../db');
+const cache = require('../utils/cache');
 const { serverErr } = require('../utils/serverErr');
 
 
@@ -71,24 +72,29 @@ const getTimetable = async (req, res) => {
       return res.status(400).json({ success: false, message: 'class_id is required' });
     }
     const year = academic_year || '2024-25';
+    const cacheKey = `timetable:${class_id}:${year}`;
 
-    const { rows } = await pool.query(
-      `SELECT
-         te.*,
-         p.period_no,
-         p.name        AS period_name,
-         p.start_time,
-         p.end_time,
-         p.is_break,
-         t.full_name   AS teacher_name,
-         t.subject     AS teacher_subject
-       FROM timetable_entries te
-       JOIN periods  p ON p.id = te.period_id
-       LEFT JOIN teachers t ON t.id = te.teacher_id
-       WHERE te.class_id = $1 AND te.academic_year = $2
-       ORDER BY te.day_of_week, p.period_no`,
-      [class_id, year]
-    );
+    const rows = await cache.remember(cacheKey, 600, async () => {
+      const { rows } = await pool.query(
+        `SELECT
+           te.*,
+           p.period_no,
+           p.name        AS period_name,
+           p.start_time,
+           p.end_time,
+           p.is_break,
+           t.full_name   AS teacher_name,
+           t.subject     AS teacher_subject
+         FROM timetable_entries te
+         JOIN periods  p ON p.id = te.period_id
+         LEFT JOIN teachers t ON t.id = te.teacher_id
+         WHERE te.class_id = $1 AND te.academic_year = $2
+         ORDER BY te.day_of_week, p.period_no`,
+        [class_id, year]
+      );
+      return rows;
+    });
+
     res.json({ success: true, data: rows, total: rows.length });
   } catch (err) { serverErr(res, err); }
 };
@@ -136,6 +142,7 @@ const upsertEntry = async (req, res) => {
        RETURNING *`,
       [class_id, period_id, day_of_week, teacher_id || null, subject || null, room || null, year]
     );
+    await cache.del(`timetable:${class_id}:${year}`);
     res.status(201).json({ success: true, data: rows[0], message: 'Timetable slot saved' });
   } catch (err) { serverErr(res, err); }
 };
@@ -175,6 +182,7 @@ const deleteEntry = async (req, res) => {
       [req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Entry not found' });
+    await cache.delPattern('timetable:*');
     res.json({ success: true, message: 'Slot cleared' });
   } catch (err) { serverErr(res, err); }
 };

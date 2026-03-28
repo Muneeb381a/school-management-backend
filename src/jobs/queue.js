@@ -9,10 +9,13 @@
  *  - 'fee-reminders'   : Send monthly fee reminder emails
  */
 
-const PgBoss = require('pg-boss');
+const { PgBoss } = require('pg-boss');
 
 let boss = null;
 let isReady = false;
+
+// All queues used by this app — created on startup so workers don't error
+const QUEUES = ['csv-import-students', 'bulk-email', 'report-generate', 'fee-reminders'];
 
 async function getQueue() {
   if (boss && isReady) return boss;
@@ -26,9 +29,9 @@ async function getQueue() {
         : { rejectUnauthorized: true };
     })(),
     retryLimit: 3,
-    retryDelay: 30,           // seconds between retries
-    expireInHours: 24,        // jobs expire after 24h if not started
-    archiveCompletedAfterSeconds: 60 * 60 * 24 * 7, // keep 7 days
+    retryDelay: 30,
+    expireInHours: 24,
+    archiveCompletedAfterSeconds: 60 * 60 * 24 * 7,
     deleteAfterDays: 30,
     monitorStateIntervalMinutes: 1,
   });
@@ -36,6 +39,12 @@ async function getQueue() {
   boss.on('error', (err) => console.error('[queue] pg-boss error:', err.message));
 
   await boss.start();
+
+  // pg-boss v9+: queues must exist before workers can poll them
+  for (const name of QUEUES) {
+    await boss.createQueue(name);
+  }
+
   isReady = true;
   console.log('✅  pg-boss job queue started.');
   return boss;
