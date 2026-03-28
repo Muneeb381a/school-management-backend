@@ -8,10 +8,10 @@ const { auditMiddleware } = require('../middleware/auditLog');
 
 router.use(auditMiddleware('event'));
 
-router.get('/',    requireRole('admin', 'teacher'), getEvents);
-router.post('/',   requireRole('admin'),            createEvent);
-router.get('/:id', requireRole('admin', 'teacher'), getEventById);
-router.put('/:id', requireRole('admin'),            updateEvent);
-router.delete('/:id', requireRole('admin'),         deleteEvent);
+router.get('/',    requireRole('admin', 'teacher', 'student', 'parent'), getEvents);
+router.post('/',   requireRole('admin'),                              createEvent);
+router.get('/:id', requireRole('admin', 'teacher', 'student', 'parent'), getEventById);
+router.put('/:id', requireRole('admin'),                              updateEvent);
+router.delete('/:id', requireRole('admin'),                           deleteEvent);
 
 module.exports = router;

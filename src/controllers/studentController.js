@@ -9,6 +9,7 @@ const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport'
 const { sendMail }                              = require('../utils/mailer');
 const { serverErr }      = require('../utils/serverErr');
 const { genTempPassword } = require('../utils/genTempPassword');
+const { fireWebhooks }    = require('../utils/webhookDispatcher');
 
 const ALL_FIELDS = [
   'class_id',
@@ -170,6 +171,15 @@ const createStudent = async (req, res, next) => {
       } catch { /* email failure is non-blocking */ }
     }
 
+    fireWebhooks('student.enrolled', {
+      student_id:       student.id,
+      full_name:        student.full_name,
+      admission_number: student.admission_number,
+      class_id:         student.class_id,
+      roll_number:      student.roll_number,
+      admission_date:   student.admission_date,
+    }).catch(() => {});
+
     res.status(201).json({
       success:     true,
       data:        student,
@@ -265,6 +275,17 @@ const promoteStudents = async (req, res, next) => {
       params = [to_class_id, grade, section, from_class_id];
     }
     const { rows } = await pool.query(query, params);
+
+    if (rows.length > 0) {
+      fireWebhooks('student.promoted', {
+        from_class_id:   from_class_id,
+        to_class_id:     to_class_id,
+        promoted_count:  rows.length,
+        student_ids:     rows.map(r => r.id),
+        promoted_at:     new Date().toISOString(),
+      }).catch(() => {});
+    }
+
     res.json({ success: true, promoted: rows.length, message: `${rows.length} student(s) promoted successfully.` });
   } catch (err) {
     next(err);

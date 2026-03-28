@@ -166,8 +166,11 @@ async function refresh(req, res, next) {
 
     const user = userRows[0];
     const newAccessToken = signAccess({
-      id: user.id, username: user.username, name: user.name,
-      role: user.role, entity_id: user.entity_id,
+      id:        user.id,
+      username:  user.username,
+      name:      user.name,
+      role:      user.role,
+      entity_id: user.entity_id,
     });
 
     return res.json({ success: true, data: { accessToken: newAccessToken } });

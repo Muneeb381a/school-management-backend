@@ -4,6 +4,7 @@ const { invalidateDashboard } = require('../utils/cache');
 const { serverErr }        = require('../utils/serverErr');
 const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
 const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
+const { fireWebhooks }                          = require('../utils/webhookDispatcher');
 
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -580,6 +581,22 @@ const recordPayment = async (req, res) => {
        WHERE fp.id=$1`,
       [pid]
     );
+
+    // Fire webhook (fire-and-forget — never blocks the response)
+    const whEvent = newStatus === 'paid' ? 'fee.paid' : 'fee.partial';
+    fireWebhooks(whEvent, {
+      invoice_id:     invoice_id,
+      invoice_no:     final[0]?.invoice_no,
+      student_id:     inv.student_id,
+      student_name:   final[0]?.student_name,
+      amount:         pay,
+      total_paid:     newPaid,
+      status:         newStatus,
+      payment_method: payment_method || 'cash',
+      payment_date:   payment_date || new Date().toISOString().slice(0, 10),
+      receipt_no:     rno,
+    }).catch(() => {});
+
     res.status(201).json({ success: true, data: final[0], message: `Payment recorded. Receipt: ${rno}` });
   } catch (err) {
     await client.query('ROLLBACK');

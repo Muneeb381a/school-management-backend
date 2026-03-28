@@ -108,6 +108,7 @@ const corsOptions = {
   origin: [
     'http://localhost:5173',
     'http://localhost:8081',
+    'http://localhost:8082',
     'http://localhost:19006',
     'https://studentmanagement-frontend-six.vercel.app',
     'https://frontend-liart-five-45.vercel.app',

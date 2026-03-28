@@ -1,6 +1,7 @@
 const pool = require('../db');
 const { buildWorkbook, sendWorkbook } = require('../utils/excelExport');
-const { serverErr } = require('../utils/serverErr');
+const { serverErr }      = require('../utils/serverErr');
+const { fireWebhooks }   = require('../utils/webhookDispatcher');
 
 
 // ── Salary Structures ────────────────────────────────────────
@@ -179,6 +180,14 @@ const generateMonthlySalaries = async (req, res) => {
       generated = rowCount;
     }
 
+    if (generated > 0) {
+      fireWebhooks('salary.generated', {
+        month,
+        teachers_count: generated,
+        generated_at:   new Date().toISOString(),
+      }).catch(() => {});
+    }
+
     res.json({ success: true, generated, message: `Salary slips generated for ${generated} teacher(s) — ${month}` });
   } catch (err) { serverErr(res, err); }
 };
@@ -223,6 +232,17 @@ const markSalaryPaid = async (req, res) => {
       WHERE id=$4 RETURNING *
     `, [payment_date || new Date().toISOString().slice(0,10), payment_method || 'cash', remarks||null, req.params.id]);
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Payment not found' });
+
+    fireWebhooks('salary.paid', {
+      salary_payment_id: rows[0].id,
+      teacher_id:        rows[0].teacher_id,
+      month:             rows[0].month,
+      gross_salary:      rows[0].gross_salary,
+      net_salary:        rows[0].net_salary,
+      payment_method:    rows[0].payment_method,
+      payment_date:      rows[0].payment_date,
+    }).catch(() => {});
+
     res.json({ success: true, data: rows[0], message: 'Salary marked as paid' });
   } catch (err) { serverErr(res, err); }
 };

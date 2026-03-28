@@ -5,13 +5,21 @@ const { serverErr } = require('../utils/serverErr');
 const getEvents = async (req, res) => {
   try {
     const { academic_year, type, month, is_holiday } = req.query;
+    const role = req.user?.role;
+    const restrictToPublic = role === 'student' || role === 'parent';
+
     let q = 'SELECT * FROM events WHERE 1=1';
     const p = [];
+
+    // Students and parents only see events marked visible to parents/public
+    if (restrictToPublic) {
+      q += ' AND (visible_to_parents = TRUE OR visible_to_parents IS NULL)';
+    }
+
     if (academic_year) { p.push(academic_year); q += ` AND academic_year=$${p.length}`; }
     if (type)          { p.push(type);          q += ` AND type=$${p.length}`; }
-    if (is_holiday !== undefined) { p.push(is_holiday); q += ` AND is_holiday=$${p.length}`; }
+    if (is_holiday !== undefined) { p.push(is_holiday === 'true'); q += ` AND is_holiday=$${p.length}`; }
     if (month) {
-      // month = 'YYYY-MM'
       const [y, m] = month.split('-');
       const first = `${y}-${m}-01`;
       const last  = new Date(parseInt(y), parseInt(m), 0).toISOString().slice(0, 10);
@@ -26,7 +34,10 @@ const getEvents = async (req, res) => {
 
 const getEventById = async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM events WHERE id=$1', [req.params.id]);
+    const role = req.user?.role;
+    const restrictToPublic = role === 'student' || role === 'parent';
+    const extra = restrictToPublic ? ' AND (visible_to_parents = TRUE OR visible_to_parents IS NULL)' : '';
+    const { rows } = await pool.query(`SELECT * FROM events WHERE id=$1${extra}`, [req.params.id]);
     if (!rows[0]) return res.status(404).json({ success: false, message: 'Event not found' });
     res.json({ success: true, data: rows[0] });
   } catch (err) { serverErr(res, err); }
