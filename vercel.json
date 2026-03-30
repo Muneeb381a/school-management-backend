@@ -8,5 +8,23 @@
   ],
   "rewrites": [
     { "source": "/(.*)", "destination": "/src/index.js" }
+  ],
+  "crons": [
+    {
+      "path": "/api/automation/attendance-insights/run",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/automation/fee-generation/run",
+      "schedule": "0 1 1 * *"
+    },
+    {
+      "path": "/api/automation/fee-reminders/run",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/automation/fee-defaulter-report/run",
+      "schedule": "0 7 * * 1"
+    }
   ]
 }

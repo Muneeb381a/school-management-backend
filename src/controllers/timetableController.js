@@ -108,24 +108,49 @@ const upsertEntry = async (req, res) => {
     }
     const year = academic_year || '2024-25';
 
-    // ── Conflict check: teacher already assigned elsewhere at this period/day ──
+    // ── Conflict check 1: teacher double-booked ──────────────────────────────
     if (teacher_id) {
-      const { rows: conflicts } = await pool.query(
+      const { rows: teacherConflicts } = await pool.query(
         `SELECT te.id, c.name AS class_name, c.section
          FROM timetable_entries te
          JOIN classes c ON c.id = te.class_id
-         WHERE te.teacher_id  = $1
-           AND te.period_id   = $2
-           AND te.day_of_week = $3
+         WHERE te.teacher_id    = $1
+           AND te.period_id     = $2
+           AND te.day_of_week   = $3
            AND te.academic_year = $4
-           AND te.class_id   != $5`,
+           AND te.class_id     != $5`,
         [teacher_id, period_id, day_of_week, year, class_id]
       );
-      if (conflicts.length > 0) {
-        const clash = conflicts[0];
+      if (teacherConflicts.length > 0) {
+        const clash = teacherConflicts[0];
         return res.status(409).json({
           success: false,
+          conflict_type: 'teacher',
           message: `Teacher is already assigned to ${clash.class_name}${clash.section ? ' – ' + clash.section : ''} at this period`,
+          conflict: clash,
+        });
+      }
+    }
+
+    // ── Conflict check 2: room double-booked ─────────────────────────────────
+    if (room && room.trim()) {
+      const { rows: roomConflicts } = await pool.query(
+        `SELECT te.id, c.name AS class_name, c.section
+         FROM timetable_entries te
+         JOIN classes c ON c.id = te.class_id
+         WHERE LOWER(te.room)   = LOWER($1)
+           AND te.period_id     = $2
+           AND te.day_of_week   = $3
+           AND te.academic_year = $4
+           AND te.class_id     != $5`,
+        [room.trim(), period_id, day_of_week, year, class_id]
+      );
+      if (roomConflicts.length > 0) {
+        const clash = roomConflicts[0];
+        return res.status(409).json({
+          success: false,
+          conflict_type: 'room',
+          message: `Room "${room}" is already booked by ${clash.class_name}${clash.section ? ' – ' + clash.section : ''} at this period`,
           conflict: clash,
         });
       }

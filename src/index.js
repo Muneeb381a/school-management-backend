@@ -78,6 +78,8 @@ const pushRoutes              = require('./routes/pushRoutes');
 const paperRoutes             = require('./routes/paperRoutes');
 const onlineClassRoutes       = require('./routes/onlineClassRoutes');
 const staffRoutes             = require('./routes/staffRoutes');
+const automationRoutes        = require('./routes/automationRoutes');
+const studyPlannerRoutes      = require('./routes/studyPlannerRoutes');
 
 const app = express();
 
@@ -311,6 +313,8 @@ const routeMap = [
   ['/papers',               paperRoutes],
   ['/online-classes',       onlineClassRoutes],
   ['/staff',                staffRoutes],
+  ['/automation',           automationRoutes],
+  ['/study-planner',        studyPlannerRoutes],
 ];
 
 for (const [path, router] of routeMap) {
