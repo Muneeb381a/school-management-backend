@@ -78,7 +78,7 @@ const getConversations = async (req, res) => {
 
     const { rows } = await pool.query(
       `SELECT
-         c.id, c.subject, c.updated_at,
+         c.id, c.subject, c.updated_at, c.requires_meeting, c.meeting_note,
          s.full_name AS student_name, s.roll_number,
          -- last message
          lm.body        AS last_message,
@@ -117,7 +117,7 @@ const getConversations = async (req, res) => {
        LEFT JOIN users lu ON lu.id = lm.sender_id
        LEFT JOIN teachers lt ON lu.role = 'teacher' AND lt.id = lu.entity_id
        LEFT JOIN students ls ON lu.role = 'student'  AND ls.id = lu.entity_id
-       GROUP BY c.id, c.subject, c.updated_at,
+       GROUP BY c.id, c.subject, c.updated_at, c.requires_meeting, c.meeting_note,
                 s.full_name, s.roll_number,
                 lm.body, lm.sent_at, lu.id, lt.full_name, ls.full_name, lu.username,
                 cp.last_read_at
@@ -329,6 +329,35 @@ const getUnreadCount = async (req, res) => {
   }
 };
 
+/* ─────────────────────────────────────────────────────────
+   PATCH /api/messages/conversations/:id/flag-meeting
+   Body: { requires_meeting: bool, meeting_note?: string }
+   Teacher/admin marks a thread as needing a PTM slot.
+───────────────────────────────────────────────────────── */
+const flagRequiresMeeting = async (req, res) => {
+  try {
+    const userId  = req.user.id;
+    const convId  = parseInt(req.params.id);
+    const { requires_meeting, meeting_note } = req.body;
+
+    // Verify participant
+    const { rows: [part] } = await pool.query(
+      `SELECT user_id FROM conversation_participants WHERE conversation_id=$1 AND user_id=$2`,
+      [convId, userId],
+    );
+    if (!part) return res.status(403).json({ success: false, message: 'Access denied' });
+
+    await pool.query(
+      `UPDATE conversations SET requires_meeting=$1, meeting_note=$2, updated_at=NOW() WHERE id=$3`,
+      [!!requires_meeting, meeting_note || null, convId],
+    );
+    res.json({ success: true, message: 'Conversation updated' });
+  } catch (err) {
+    console.error('[MESSAGES] flagRequiresMeeting:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to update conversation' });
+  }
+};
+
 module.exports = {
   getRecipients,
   getConversations,
@@ -336,4 +365,5 @@ module.exports = {
   getMessages,
   sendMessage,
   getUnreadCount,
+  flagRequiresMeeting,
 };

@@ -174,6 +174,95 @@ const getStudentHomeworkHistory = async (req, res) => {
   } catch (err) { serverErr(res, err); }
 };
 
+// ─────────────────────────────────────────────────────────────
+//  GET /homework-submissions/stats
+//  Aggregated submission counts per homework (teacher view).
+//  Returns: submitted_count, total_students, missing_count, checked_count
+// ─────────────────────────────────────────────────────────────
+const getSubmissionStats = async (req, res) => {
+  const { teacher_id, class_id } = req.query;
+  try {
+    let q = `
+      SELECT
+        h.id, h.title, h.due_date, h.class_id, h.subject_id, h.status, h.academic_year,
+        c.name  AS class_name,
+        sub.name AS subject_name,
+        COUNT(DISTINCT st.id)                                                             AS total_students,
+        COUNT(DISTINCT hs.id) FILTER (WHERE hs.status IN ('submitted','checked'))         AS submitted_count,
+        COUNT(DISTINCT hs.id) FILTER (WHERE hs.status = 'checked')                       AS checked_count,
+        COUNT(DISTINCT hs.id) FILTER (WHERE hs.status = 'missing')                       AS missing_count
+      FROM homework h
+      LEFT JOIN classes  c   ON c.id   = h.class_id
+      LEFT JOIN subjects sub ON sub.id = h.subject_id
+      LEFT JOIN students st  ON st.class_id = h.class_id AND st.status = 'active'
+      LEFT JOIN homework_submissions hs ON hs.homework_id = h.id AND hs.student_id = st.id
+      WHERE 1=1
+    `;
+    const params = [];
+    if (teacher_id) { params.push(teacher_id); q += ` AND h.teacher_id = $${params.length}`; }
+    if (class_id)   { params.push(class_id);   q += ` AND h.class_id  = $${params.length}`; }
+    q += ` GROUP BY h.id, h.title, h.due_date, h.class_id, h.subject_id, h.status, h.academic_year, c.name, sub.name
+           ORDER BY h.due_date DESC LIMIT 100`;
+    const { rows } = await pool.query(q, params);
+    res.json({ success: true, data: rows });
+  } catch (err) { serverErr(res, err); }
+};
+
+// ─────────────────────────────────────────────────────────────
+//  POST /homework-submissions/:homework_id/remind
+//  Sends in-app notification to students who haven't submitted.
+// ─────────────────────────────────────────────────────────────
+const sendReminder = async (req, res) => {
+  const { homework_id } = req.params;
+  try {
+    const { rows: [hw] } = await pool.query(
+      `SELECT h.*, c.name AS class_name, sub.name AS subject_name
+       FROM homework h
+       LEFT JOIN classes  c   ON c.id   = h.class_id
+       LEFT JOIN subjects sub ON sub.id = h.subject_id
+       WHERE h.id = $1`,
+      [homework_id]
+    );
+    if (!hw) return res.status(404).json({ success: false, message: 'Homework not found' });
+
+    // Students who haven't submitted (no record OR pending/missing)
+    const { rows: students } = await pool.query(
+      `SELECT s.id AS student_id, s.full_name, u.id AS user_id
+       FROM students s
+       LEFT JOIN homework_submissions hs ON hs.homework_id = $1 AND hs.student_id = s.id
+       LEFT JOIN users u ON u.entity_id = s.id AND u.role = 'student'
+       WHERE s.class_id = $2 AND s.status = 'active'
+         AND (hs.id IS NULL OR hs.status IN ('pending','missing'))`,
+      [homework_id, hw.class_id]
+    );
+
+    if (students.length === 0) {
+      return res.json({ success: true, message: 'All students have already submitted', reminded: 0 });
+    }
+
+    const withAccounts = students.filter(s => s.user_id);
+    if (withAccounts.length > 0) {
+      const vals   = withAccounts.map((_, i) => `($${i*4+1},$${i*4+2},$${i*4+3},$${i*4+4}::jsonb)`).join(',');
+      const params = withAccounts.flatMap(s => [
+        s.user_id,
+        'homework_reminder',
+        `Reminder: "${hw.title}" is due on ${hw.due_date}. Please submit before the deadline.`,
+        JSON.stringify({ homework_id: hw.id, class_name: hw.class_name, subject_name: hw.subject_name }),
+      ]);
+      await pool.query(
+        `INSERT INTO notifications (user_id, type, message, metadata) VALUES ${vals}`,
+        params
+      );
+    }
+
+    res.json({
+      success: true,
+      message: `Reminder sent to ${students.length} student${students.length !== 1 ? 's' : ''}`,
+      reminded: students.length,
+    });
+  } catch (err) { serverErr(res, err); }
+};
+
 module.exports = {
   getSubmissionsForHomework,
   upsertSubmission,
@@ -181,4 +270,6 @@ module.exports = {
   bulkInitSubmissions,
   getPendingForDashboard,
   getStudentHomeworkHistory,
+  getSubmissionStats,
+  sendReminder,
 };

@@ -9,12 +9,15 @@ const {
   bulkInitSubmissions,
   getPendingForDashboard,
   getStudentHomeworkHistory,
+  getSubmissionStats,
+  sendReminder,
 } = require('../controllers/homeworkSubmissionController');
 
 router.use(auditMiddleware('homework-submissions'));
 
 // Dashboard and student history routes (no :homework_id prefix — must come first)
 router.get('/pending-summary',        requireRole('admin', 'teacher'), getPendingForDashboard);
+router.get('/stats',                  requireRole('admin', 'teacher'), getSubmissionStats);
 router.get('/student/:id/history',    requireRole('admin', 'teacher', 'student'), getStudentHomeworkHistory);
 
 // Routes with :homework_id prefix
@@ -22,5 +25,6 @@ router.get('/:homework_id/submissions',                           requireRole('a
 router.post('/:homework_id/submissions/init',                     requireRole('admin', 'teacher'), bulkInitSubmissions);
 router.post('/:homework_id/submissions',                          requireRole('admin', 'teacher', 'student'), upsertSubmission);
 router.put('/:homework_id/submissions/:student_id/check',         requireRole('admin', 'teacher'), teacherCheck);
+router.post('/:homework_id/remind',                               requireRole('admin', 'teacher'), sendReminder);
 
 module.exports = router;

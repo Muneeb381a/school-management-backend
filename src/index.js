@@ -80,14 +80,26 @@ const onlineClassRoutes       = require('./routes/onlineClassRoutes');
 const staffRoutes             = require('./routes/staffRoutes');
 const automationRoutes        = require('./routes/automationRoutes');
 const studyPlannerRoutes      = require('./routes/studyPlannerRoutes');
+const parentFeedRoutes        = require('./routes/parentFeedRoutes');
+const schoolRoutes            = require('./routes/schoolRoutes');
+const whatsappRoutes          = require('./routes/whatsappRoutes');
+const riskRoutes              = require('./routes/riskRoutes');
+const auditRoutes             = require('./routes/auditRoutes');
+const billingRoutes           = require('./routes/billingRoutes');
+const onboardingRoutes        = require('./routes/onboardingRoutes');
+const healthRoutes            = require('./routes/healthRoutes');
+const documentRoutes          = require('./routes/documentRoutes');
+const timetableGeneratorRoutes = require('./routes/timetableGeneratorRoutes');
+const { metricsMiddleware }   = require('./services/metricsService');
 
 const app = express();
 
 // Trust Vercel / reverse-proxy headers so express-rate-limit can read real IPs
 app.set('trust proxy', 1);
 
-// ── 1. Request ID — attach before anything logs ───────────────────────────────
+// ── 1. Request ID + metrics ───────────────────────────────────────────────────
 app.use(requestId);
+app.use(metricsMiddleware);
 
 // ── 2. Response compression — gzip all JSON/text responses ───────────────────
 app.use(compression());
@@ -240,6 +252,8 @@ app.get('/api/health/ready', async (_req, res) => {
 for (const prefix of ['/api', '/api/v1']) {
   app.use(`${prefix}/auth/login`, loginLimiter);
   app.use(`${prefix}/auth`, authRoutes);
+  // School resolve is public — login page calls it before JWT exists
+  app.use(`${prefix}/schools/resolve`, schoolRoutes);
 }
 
 // ── 10. Global JWT guard ──────────────────────────────────────────────────────
@@ -315,6 +329,16 @@ const routeMap = [
   ['/staff',                staffRoutes],
   ['/automation',           automationRoutes],
   ['/study-planner',        studyPlannerRoutes],
+  ['/parent-feed',          parentFeedRoutes],
+  ['/schools',              schoolRoutes],
+  ['/whatsapp',             whatsappRoutes],
+  ['/risk',                 riskRoutes],
+  ['/audit',                auditRoutes],
+  ['/billing',              billingRoutes],
+  ['/onboarding',           onboardingRoutes],
+  ['/system-health',        healthRoutes],
+  ['/documents',            documentRoutes],
+  ['/timetable-generator',  timetableGeneratorRoutes],
 ];
 
 for (const [path, router] of routeMap) {

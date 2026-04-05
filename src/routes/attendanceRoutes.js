@@ -13,11 +13,15 @@ const {
   exportAttendanceExcel,
   getStudentHistory,
   getAttendanceRegister,
+  getTeacherQuickList,
 } = require('../controllers/attendanceController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
 
 router.use(auditMiddleware('attendance'));
+
+// One-tap quick list for teacher portal
+router.get('/teacher-quick-list', requireRole('admin', 'teacher'), getTeacherQuickList);
 
 // Fetch helpers
 router.get('/class-students',    requireRole('admin', 'teacher'), getClassStudentsAttendance);

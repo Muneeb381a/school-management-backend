@@ -1,16 +1,19 @@
 const jwt      = require('jsonwebtoken');
 const AppError = require('../utils/AppError');
+const db       = require('../db');
 
 const ACCESS_SECRET = process.env.JWT_SECRET;
-
 if (!ACCESS_SECRET) {
   throw new Error('FATAL: JWT_SECRET must be set in environment variables.');
 }
 
 /**
  * Verify the Bearer access token from the Authorization header.
- * On success, populates req.user with the decoded JWT payload.
- * On failure, passes an AppError to the next error handler.
+ * On success:
+ *  - populates req.user with the decoded JWT payload
+ *  - if the token carries a `schema` field (multi-tenant mode), wraps the
+ *    remainder of the request in AsyncLocalStorage so pool.query / pool.connect
+ *    automatically target that school's schema — zero controller changes needed.
  */
 function verifyToken(req, _res, next) {
   const header = req.headers.authorization || '';
@@ -20,22 +23,35 @@ function verifyToken(req, _res, next) {
     return next(new AppError('Authentication required. Please log in.', 401, 'NO_TOKEN'));
   }
 
+  let decoded;
   try {
-    req.user = jwt.verify(token, ACCESS_SECRET);
-    next();
+    decoded = jwt.verify(token, ACCESS_SECRET);
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
       return next(new AppError('Access token expired.', 401, 'TOKEN_EXPIRED'));
     }
     return next(new AppError('Invalid token.', 401, 'INVALID_TOKEN'));
   }
+
+  req.user = decoded;
+
+  // ── Multi-tenant schema injection ────────────────────────────────────────
+  // If the JWT contains a `schema` field (e.g. "school_greenvalley"), run all
+  // downstream middleware + the controller inside the schema's async context.
+  // pool.query() and pool.connect() pick this up automatically via AsyncLocalStorage.
+  //
+  // If there is no schema (super-admin tokens, legacy single-tenant tokens),
+  // the request proceeds normally using the public schema.
+  if (decoded.schema) {
+    return db.schemaStore.run(decoded.schema, next);
+  }
+
+  next();
 }
 
 /**
- * Role-based access control middleware.
+ * Role-based access control.
  * Usage: router.delete('/:id', requireRole('admin'), handler)
- *
- * @param {...string} roles  Allowed roles e.g. 'admin', 'teacher'
  */
 function requireRole(...roles) {
   return (req, _res, next) => {
@@ -53,12 +69,22 @@ function requireRole(...roles) {
 }
 
 /**
- * Ownership guard — ensures the authenticated user owns the resource
- * OR is an admin.
- *
+ * Super-admin guard — only for platform-level operations
+ * (create/manage schools, view all tenants, billing etc.)
+ */
+function requireSuperAdmin(req, _res, next) {
+  if (!req.user) {
+    return next(new AppError('Authentication required.', 401, 'UNAUTHORIZED'));
+  }
+  if (!req.user.is_super_admin) {
+    return next(new AppError('Super-admin access required.', 403, 'FORBIDDEN'));
+  }
+  next();
+}
+
+/**
+ * Ownership guard — user must own the resource OR be an admin.
  * Usage: requireOwnerOrAdmin((req) => req.params.id)
- *
- * @param {Function} getResourceId  Extracts the resource owner entity_id from req
  */
 function requireOwnerOrAdmin(getResourceId) {
   return (req, _res, next) => {
@@ -77,13 +103,6 @@ function requireOwnerOrAdmin(getResourceId) {
 
 /**
  * Blocks all API access for users whose temporary password hasn't been changed.
- * Mount this AFTER verifyToken globally so it applies to all protected routes.
- *
- * Exempt paths: none needed — auth routes (/api/auth/*) are mounted before
- * the global verifyToken so they never reach this middleware.
- *
- * Response: 403 PASSWORD_CHANGE_REQUIRED
- * Frontend should intercept this code and redirect to the change-password screen.
  */
 function requirePasswordChanged(req, _res, next) {
   if (req.user?.mustChangePassword) {
@@ -96,4 +115,10 @@ function requirePasswordChanged(req, _res, next) {
   next();
 }
 
-module.exports = { verifyToken, requireRole, requireOwnerOrAdmin, requirePasswordChanged };
+module.exports = {
+  verifyToken,
+  requireRole,
+  requireSuperAdmin,
+  requireOwnerOrAdmin,
+  requirePasswordChanged,
+};

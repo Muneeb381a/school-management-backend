@@ -647,6 +647,98 @@ const exportAttendanceExcel = async (req, res, next) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────
+//  GET /api/attendance/teacher-quick-list
+//  Teacher one-tap attendance: returns today's classes with
+//  students pre-populated from existing records + late_arrivals.
+//  All students default to "present"; teacher only taps absent.
+//  Query: teacher_id, date (optional, defaults to today)
+// ─────────────────────────────────────────────────────────────
+const getTeacherQuickList = async (req, res) => {
+  const { teacher_id, date } = req.query;
+  if (!teacher_id) return res.status(400).json({ success: false, message: 'teacher_id required' });
+
+  const targetDate = date || new Date().toISOString().slice(0, 10);
+  // Build day name robustly (avoid timezone shifts by appending noon)
+  const dayName = new Date(`${targetDate}T12:00:00`).toLocaleDateString('en-US', { weekday: 'long' });
+
+  try {
+    // Each class appears once, ordered by first period of the day
+    const { rows: entries } = await pool.query(
+      `SELECT DISTINCT ON (te.class_id)
+         te.class_id,
+         c.name AS class_name, c.grade, c.section,
+         te.subject_id, sub.name AS subject_name,
+         p.period_number, p.start_time, p.end_time
+       FROM timetable_entries te
+       JOIN  classes  c   ON c.id   = te.class_id
+       LEFT JOIN subjects sub ON sub.id  = te.subject_id
+       LEFT JOIN periods  p   ON p.id   = te.period_id
+       WHERE te.teacher_id = $1 AND te.day_of_week = $2
+       ORDER BY te.class_id, p.period_number ASC NULLS LAST`,
+      [teacher_id, dayName]
+    );
+
+    if (entries.length === 0) {
+      return res.json({ success: true, data: { classes: [], date: targetDate, day_name: dayName } });
+    }
+
+    const classesWithStudents = await Promise.all(entries.map(async (entry) => {
+      const [studentsRes, existingRes, lateRes] = await Promise.all([
+        pool.query(
+          `SELECT id, full_name, roll_number, father_name
+           FROM students WHERE class_id = $1 AND status = 'active'
+           ORDER BY roll_number ASC NULLS LAST, full_name ASC`,
+          [entry.class_id]
+        ),
+        pool.query(
+          `SELECT student_id, status, remarks
+           FROM attendance WHERE class_id = $1 AND date = $2 AND period_id IS NULL`,
+          [entry.class_id, targetDate]
+        ),
+        // late_arrivals may not be populated — fail silently
+        pool.query(
+          `SELECT student_id FROM late_arrivals WHERE class_id = $1 AND date = $2`,
+          [entry.class_id, targetDate]
+        ).catch(() => ({ rows: [] })),
+      ]);
+
+      const existingMap = {};
+      existingRes.rows.forEach(r => { existingMap[r.student_id] = r; });
+      const lateSet = new Set(lateRes.rows.map(r => r.student_id));
+
+      const students = studentsRes.rows.map(s => ({
+        id:              s.id,
+        full_name:       s.full_name,
+        roll_number:     s.roll_number,
+        father_name:     s.father_name,
+        // Priority: existing DB record → late arrival → default present
+        status:          existingMap[s.id]?.status  || (lateSet.has(s.id) ? 'late' : 'present'),
+        remarks:         existingMap[s.id]?.remarks || (lateSet.has(s.id) ? 'Late arrival' : ''),
+        is_late_arrival: lateSet.has(s.id),
+        already_marked:  !!existingMap[s.id],
+      }));
+
+      return {
+        class_id:      entry.class_id,
+        class_name:    entry.class_name,
+        grade:         entry.grade,
+        section:       entry.section,
+        subject_name:  entry.subject_name,
+        period_number: entry.period_number,
+        start_time:    entry.start_time,
+        end_time:      entry.end_time,
+        students,
+        total:         students.length,
+        marked_count:  existingRes.rows.length,
+        already_marked: existingRes.rows.length > 0,
+      };
+    }));
+
+    res.json({ success: true, data: { classes: classesWithStudents, date: targetDate, day_name: dayName } });
+  } catch (err) { serverErr(res, err); }
+};
+
 module.exports = {
   getClassStudentsAttendance,
   getTeachersAttendance,
@@ -660,4 +752,5 @@ module.exports = {
   exportAttendanceExcel,
   getStudentHistory,
   getAttendanceRegister,
+  getTeacherQuickList,
 };

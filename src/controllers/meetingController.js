@@ -37,7 +37,9 @@ const getSlots = async (req, res) => {
   try {
     const { teacher_id, date, academic_year } = req.query;
     let q = `
-      SELECT ms.*, t.full_name AS teacher_name,
+      SELECT ms.*,
+             CASE WHEN ms.is_booked THEN 'booked' ELSE 'available' END AS status,
+             t.full_name AS teacher_name,
              mb.id AS booking_id, mb.parent_name, mb.parent_phone, mb.student_id,
              mb.status AS booking_status,
              s.full_name AS student_name

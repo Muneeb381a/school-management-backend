@@ -66,7 +66,12 @@ const getExams = async (req, res) => {
     const values = [];
 
     if (academic_year) { values.push(academic_year); conditions.push(`academic_year = $${values.length}`); }
-    if (status)        { values.push(status);        conditions.push(`status = $${values.length}`); }
+    if (status) {
+      // Support comma-separated values e.g. "scheduled,ongoing,completed"
+      const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
+      values.push(statuses);
+      conditions.push(`status = ANY($${values.length}::text[])`);
+    }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const { rows } = await pool.query(
