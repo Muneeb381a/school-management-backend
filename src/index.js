@@ -8,11 +8,14 @@ require('dotenv').config();
 const validateEnv = require('./utils/validateEnv');
 validateEnv();
 
+const http       = require('http');
 const express    = require('express');
 const cors       = require('cors');
 const helmet     = require('helmet');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const compression = require('compression');
+const { Server: SocketServer } = require('socket.io');
+const { setupSocketIO, shutdownSocket } = require('./services/socketService');
 const morgan      = require('morgan');
 
 // ── Structured logging (Pino) ─────────────────────────────────────────────────
@@ -90,9 +93,24 @@ const onboardingRoutes        = require('./routes/onboardingRoutes');
 const healthRoutes            = require('./routes/healthRoutes');
 const documentRoutes          = require('./routes/documentRoutes');
 const timetableGeneratorRoutes = require('./routes/timetableGeneratorRoutes');
+const installmentRoutes        = require('./routes/installmentRoutes');
+const disciplineRoutes         = require('./routes/disciplineRoutes');
+const substitutionRoutes       = require('./routes/substitutionRoutes');
+const complaintRoutes          = require('./routes/complaintRoutes');
+const examSeatingRoutes        = require('./routes/examSeatingRoutes');
+const hostelRoutes             = require('./routes/hostelRoutes');
+const branchRoutes             = require('./routes/branchRoutes');
+const budgetRoutes             = require('./routes/budgetRoutes');
+const websiteRoutes            = require('./routes/websiteRoutes');
+const trackingRoutes           = require('./routes/trackingRoutes');
+const chatRoutes               = require('./routes/chatRoutes');
 const { metricsMiddleware }   = require('./services/metricsService');
 
 const app = express();
+
+// ── Create HTTP server (needed for Socket.IO) ─────────────────────────────────
+// NOTE: We export this server, not just app, so Socket.IO can attach.
+const httpServer = http.createServer(app);
 
 // Trust Vercel / reverse-proxy headers so express-rate-limit can read real IPs
 app.set('trust proxy', 1);
@@ -138,6 +156,24 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
+
+// ── 5b. Socket.IO — attach to HTTP server with same CORS config ───────────────
+const io = new SocketServer(httpServer, {
+  cors: {
+    origin: corsOptions.origin,
+    methods: ['GET', 'POST'],
+    credentials: true,
+  },
+  // Tune for poor Pakistan mobile internet:
+  pingTimeout: 30_000,          // 30 s before declaring disconnected
+  pingInterval: 15_000,         // ping every 15 s
+  transports: ['websocket', 'polling'],  // polling fallback if WS blocked
+  maxHttpBufferSize: 1e5,       // 100 KB max message (location payloads are tiny)
+});
+
+// Make io accessible anywhere: req.app.get('io') or req.io (injected per-router)
+app.set('io', io);
+setupSocketIO(io);
 
 // ── 6. Body parsers ───────────────────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
@@ -339,6 +375,17 @@ const routeMap = [
   ['/system-health',        healthRoutes],
   ['/documents',            documentRoutes],
   ['/timetable-generator',  timetableGeneratorRoutes],
+  ['/installments',         installmentRoutes],
+  ['/discipline',           disciplineRoutes],
+  ['/substitutions',        substitutionRoutes],
+  ['/complaints',           complaintRoutes],
+  ['/exam-seating',         examSeatingRoutes],
+  ['/hostel',               hostelRoutes],
+  ['/branches',             branchRoutes],
+  ['/budget',               budgetRoutes],
+  ['/website',              websiteRoutes],
+  ['/tracking',             trackingRoutes],
+  ['/chat',                 chatRoutes],
 ];
 
 for (const [path, router] of routeMap) {
@@ -359,7 +406,8 @@ app.use(errorHandler);
 // Vercel automatically sets process.env.VERCEL = '1' in all serverless deployments.
 const PORT = process.env.PORT || 5000;
 if (!process.env.VERCEL) {
-  const server = app.listen(PORT, '0.0.0.0', async () => {
+  // Use httpServer (not app.listen) so Socket.IO shares the same port
+  const server = httpServer.listen(PORT, '0.0.0.0', async () => {
     logger.info({ port: PORT }, `🚀  Server running at http://localhost:${PORT}`);
     startScheduler();
 
@@ -378,6 +426,7 @@ if (!process.env.VERCEL) {
     server.close(async () => {
       logger.info('HTTP server closed.');
       try { await stopQueue(); } catch { /* best effort */ }
+      shutdownSocket();
       try {
         const pool = require('./db');
         await pool.end();
@@ -404,4 +453,6 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // ── 15. Export for Vercel serverless ─────────────────────────────────────────
+// Note: Vercel serverless does NOT support Socket.IO persistent connections.
+// For real-time tracking in production, deploy on a persistent server (Railway, DigitalOcean, VPS).
 module.exports = app;

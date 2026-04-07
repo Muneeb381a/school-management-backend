@@ -9,8 +9,30 @@ const {
 } = require('../controllers/transportController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
+const asyncHandler        = require('../utils/asyncHandler');
+const db                  = require('../db');
 
 router.use(auditMiddleware('transport'));
+
+// Driver: returns the bus assigned to the logged-in driver (by driver_user_id)
+router.get('/my-bus-driver', asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT b.id, b.bus_number, b.vehicle_number, b.make_model,
+            b.driver_name, b.driver_phone, b.status,
+            b.current_lat, b.current_lng, b.is_online, b.trip_status,
+            r.route_name, r.id AS route_id
+     FROM buses b
+     LEFT JOIN bus_route_assignments bra ON bra.bus_id = b.id AND bra.is_active = true
+     LEFT JOIN transport_routes r ON r.id = bra.route_id
+     WHERE b.driver_user_id = $1 AND b.status = 'active'
+     LIMIT 1`,
+    [req.user.id]
+  );
+  if (!rows.length) {
+    return res.status(404).json({ success: false, message: 'No active bus assigned to this driver' });
+  }
+  res.json({ success: true, data: rows[0] });
+}));
 
 // Summary
 router.get('/summary',                    requireRole('admin', 'teacher'), getSummary);
