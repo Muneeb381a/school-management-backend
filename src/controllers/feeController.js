@@ -5,6 +5,7 @@ const { serverErr }        = require('../utils/serverErr');
 const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
 const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
 const { fireWebhooks }                          = require('../utils/webhookDispatcher');
+const { logLifecycleEvent }                     = require('../services/lifecycleService');
 
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -197,6 +198,16 @@ const getInvoices = async (req, res) => {
 // GET /api/fees/invoices/:id  (with items + payments)
 const getInvoice = async (req, res) => {
   try {
+    // Teachers can only access invoices for classes they are assigned to
+    let scopeJoin = '';
+    let scopeWhere = '';
+    const p = [req.params.id];
+    if (req.user.role === 'teacher') {
+      p.push(req.user.entity_id);
+      scopeJoin  = '';
+      scopeWhere = ` AND fi.class_id IN (SELECT class_id FROM teacher_classes WHERE teacher_id = $${p.length})`;
+    }
+
     const { rows: invRows } = await pool.query(
       `SELECT fi.*,
         (fi.total_amount + fi.fine_amount - fi.discount_amount)                  AS net_amount,
@@ -207,8 +218,8 @@ const getInvoice = async (req, res) => {
        FROM fee_invoices fi
        JOIN students s ON s.id = fi.student_id
        LEFT JOIN classes c ON c.id = fi.class_id
-       WHERE fi.id = $1`,
-      [req.params.id]
+       WHERE fi.id = $1${scopeWhere}`,
+      p
     );
     if (!invRows[0]) return res.status(404).json({ success: false, message: 'Invoice not found' });
 
@@ -300,12 +311,12 @@ const generateMonthlyFees = async (req, res) => {
     const { rows: students } = await client.query(
       student_id
         ? `SELECT id, class_id, full_name, transport_required, hostel_required
-           FROM students WHERE status='active' AND id=$1`
+           FROM students WHERE status='active' AND deleted_at IS NULL AND id=$1`
         : class_id
           ? `SELECT id, class_id, full_name, transport_required, hostel_required
-             FROM students WHERE status='active' AND class_id=$1`
+             FROM students WHERE status='active' AND deleted_at IS NULL AND class_id=$1`
           : `SELECT id, class_id, full_name, transport_required, hostel_required
-             FROM students WHERE status='active' AND class_id IS NOT NULL`,
+             FROM students WHERE status='active' AND deleted_at IS NULL AND class_id IS NOT NULL`,
       student_id ? [student_id] : class_id ? [class_id] : []
     );
 
@@ -608,6 +619,21 @@ const recordPayment = async (req, res) => {
       receipt_no:     rno,
     }).catch(() => {});
 
+    const lcEventType = newStatus === 'paid' ? 'fee_paid' : 'fee_partial';
+    const amountFmt   = `PKR ${Number(pay).toLocaleString()}`;
+    logLifecycleEvent({
+      studentId:   inv.student_id,
+      eventType:   lcEventType,
+      title:       `Fee ${newStatus === 'paid' ? 'paid' : 'partially paid'} — ${amountFmt}`,
+      description: `Invoice ${final[0]?.invoice_no || invoice_id} · Receipt ${rno}`,
+      metadata:    {
+        invoice_id, invoice_no: final[0]?.invoice_no,
+        amount: pay, total_paid: newPaid, status: newStatus,
+        payment_method: payment_method || 'cash', receipt_no: rno,
+      },
+      performedBy: req.user?.id ?? null,
+    }).catch(() => {});
+
     res.status(201).json({ success: true, data: final[0], message: `Payment recorded. Receipt: ${rno}` });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -737,7 +763,8 @@ const getOutstandingBalances = async (req, res) => {
        FROM students s
        JOIN fee_invoices fi ON fi.student_id = s.id
        LEFT JOIN classes c ON c.id = s.class_id
-       WHERE fi.status IN ('unpaid','partial','overdue')
+       WHERE s.deleted_at IS NULL
+         AND fi.status IN ('unpaid','partial','overdue')
          ${classFilter} ${typeFilter}
        GROUP BY s.id, s.full_name, s.roll_number, s.phone, c.name, c.grade, c.section
        HAVING SUM(fi.total_amount + fi.fine_amount - fi.discount_amount - fi.paid_amount) > 0
@@ -1498,11 +1525,12 @@ const importFeePayments = async (req, res, next) => {
       }
       const studentId = stRows[0].id;
 
-      // Find the latest unpaid invoice for this student
+      // Find the latest unpaid/overdue/partial invoice for this student
       const { rows: invRows } = await pool.query(
-        `SELECT id, net_amount FROM fee_invoices
-         WHERE student_id = $1 AND status = 'unpaid'
-         ORDER BY due_date ASC LIMIT 1`,
+        `SELECT id, total_amount, fine_amount, discount_amount, paid_amount, due_date
+         FROM fee_invoices
+         WHERE student_id = $1 AND status IN ('unpaid','partial','overdue')
+         ORDER BY due_date ASC NULLS LAST LIMIT 1`,
         [studentId]
       );
       if (!invRows[0]) {
@@ -1510,27 +1538,31 @@ const importFeePayments = async (req, res, next) => {
         continue;
       }
 
+      const pay = parseFloat(data.amount);
+      const inv = invRows[0];
+      const rno = receiptNo(Date.now());
       await pool.query(
         `INSERT INTO fee_payments
-           (invoice_id, amount_paid, payment_date, payment_method, reference_number, remarks)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
+           (invoice_id, student_id, amount, payment_date, payment_method, transaction_ref, remarks, receipt_no)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [
-          invRows[0].id,
-          parseFloat(data.amount),
+          inv.id,
+          studentId,
+          pay,
           data.payment_date,
           data.payment_method || 'cash',
           data.reference_number || null,
           data.remarks || null,
+          rno,
         ]
       );
 
-      // Update invoice status
-      const paid = parseFloat(data.amount);
-      const net  = parseFloat(invRows[0].net_amount);
-      const newStatus = paid >= net ? 'paid' : 'partial';
+      // Update invoice paid_amount and recalculate status
+      const newPaid   = parseFloat(inv.paid_amount) + pay;
+      const newStatus = calcStatus(inv.total_amount, inv.discount_amount, inv.fine_amount, newPaid, inv.due_date);
       await pool.query(
-        `UPDATE fee_invoices SET status = $1, paid_amount = COALESCE(paid_amount,0) + $2 WHERE id = $3`,
-        [newStatus, paid, invRows[0].id]
+        `UPDATE fee_invoices SET paid_amount = $1, status = $2, updated_at = NOW() WHERE id = $3`,
+        [newPaid, newStatus, inv.id]
       );
 
       imported++;

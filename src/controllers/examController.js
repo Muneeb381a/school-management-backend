@@ -1,5 +1,6 @@
 const pool = require('../db');
 const { serverErr } = require('../utils/serverErr');
+const { logLifecycleBatch } = require('../services/lifecycleService');
 
 // ══════════════════════════════════════════════════════════════
 //  HELPER — grade from percentage
@@ -352,6 +353,21 @@ const submitMarks = async (req, res) => {
       saved.push(rows[0]);
     }
     await client.query('COMMIT');
+
+    // Lifecycle: one event per unique student (fire-and-forget)
+    const studentsSeen = new Set();
+    const lcEvents = saved
+      .filter(r => { if (studentsSeen.has(r.student_id)) return false; studentsSeen.add(r.student_id); return true; })
+      .map(r => ({
+        studentId:   r.student_id,
+        eventType:   'exam_result',
+        title:       `Exam marks submitted — exam #${examId}`,
+        description: r.is_absent ? 'Marked absent' : `${r.obtained_marks} marks recorded`,
+        metadata:    { exam_id: examId, subject_id: r.subject_id, obtained_marks: r.obtained_marks, is_absent: r.is_absent },
+        performedBy: req.user?.id ?? null,
+      }));
+    if (lcEvents.length) logLifecycleBatch(lcEvents).catch(() => {});
+
     res.status(201).json({ success: true, data: saved, message: `${saved.length} mark(s) saved` });
   } catch (err) {
     await client.query('ROLLBACK');

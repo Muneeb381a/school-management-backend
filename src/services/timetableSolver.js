@@ -38,7 +38,7 @@ function solve({ classes, teachers, subjects, days, periodsPerDay }) {
     }
 
     if (!placed) {
-      const subjectName = req.name || `Subject ${subject_id}`;
+      const subjectName = req.subject_name || req.name || `Subject ${subject_id}`;
       const className   = classes.find(c => c.id === class_id)?.name || class_id;
       conflicts.push(`Could not place "${subjectName}" for "${className}"`);
     }

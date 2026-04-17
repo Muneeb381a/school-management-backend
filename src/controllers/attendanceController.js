@@ -2,6 +2,7 @@ const pool = require('../db');
 const { buildWorkbook, sendWorkbook } = require('../utils/excelExport');
 const { invalidateDashboard } = require('../utils/cache');
 const { serverErr } = require('../utils/serverErr');
+const { logLifecycleBatch } = require('../services/lifecycleService');
 
 /**
  * Returns true if the teacher owns (is assigned to) the given class.
@@ -53,7 +54,7 @@ const getClassStudentsAttendance = async (req, res) => {
         AND a.entity_id   = s.id
         AND a.date        = $2
         ${periodCondition}
-       WHERE s.class_id = $1
+       WHERE s.class_id = $1 AND s.deleted_at IS NULL
        ORDER BY s.roll_number NULLS LAST, s.full_name`,
       params
     );
@@ -153,6 +154,20 @@ const bulkMark = async (req, res) => {
 
     await client.query('COMMIT');
     invalidateDashboard().catch(() => {});
+
+    // Log absent/late students to lifecycle (fire-and-forget, students only)
+    const lcEvents = results
+      .filter(r => r.entity_type === 'student' && (r.status === 'absent' || r.status === 'late'))
+      .map(r => ({
+        studentId:   r.entity_id,
+        eventType:   r.status === 'absent' ? 'attendance_absent' : 'attendance_late',
+        title:       r.status === 'absent' ? `Absent — ${r.date}` : `Late arrival — ${r.date}`,
+        description: r.remarks || null,
+        metadata:    { date: r.date, status: r.status, class_id: r.class_id },
+        performedBy: req.user?.id ?? null,
+      }));
+    if (lcEvents.length) logLifecycleBatch(lcEvents).catch(() => {});
+
     res.status(201).json({ success: true, saved: results.length, message: `${results.length} records saved` });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -278,7 +293,7 @@ const getMonthlySummary = async (req, res) => {
            ON a.entity_type = 'student' AND a.entity_id = s.id
            AND a.date BETWEEN $2 AND $3
            ${periodFilter}
-         WHERE s.class_id = $1
+         WHERE s.class_id = $1 AND s.deleted_at IS NULL
          GROUP BY s.id, s.full_name, s.roll_number, s.gender
          ORDER BY s.roll_number NULLS LAST, s.full_name`,
         [class_id, startDate, endDate]
@@ -392,7 +407,7 @@ const exportCSV = async (req, res) => {
          FROM students s
          LEFT JOIN attendance a ON a.entity_type='student' AND a.entity_id=s.id
            AND a.date BETWEEN $2 AND $3 AND a.period_id IS NULL
-         WHERE s.class_id=$1
+         WHERE s.class_id=$1 AND s.deleted_at IS NULL
          GROUP BY s.id ORDER BY s.roll_number NULLS LAST, s.full_name`,
         [class_id, startDate, endDate]
       ));
@@ -503,7 +518,7 @@ const getAttendanceRegister = async (req, res) => {
     const { rows: students } = await pool.query(
       `SELECT id, full_name, roll_number, gender
        FROM students
-       WHERE class_id = $1 AND status = 'active'
+       WHERE class_id = $1 AND status = 'active' AND deleted_at IS NULL
        ORDER BY roll_number NULLS LAST, full_name`,
       [class_id]
     );
@@ -669,13 +684,13 @@ const getTeacherQuickList = async (req, res) => {
          te.class_id,
          c.name AS class_name, c.grade, c.section,
          te.subject_id, sub.name AS subject_name,
-         p.period_number, p.start_time, p.end_time
+         p.period_no, p.start_time, p.end_time
        FROM timetable_entries te
        JOIN  classes  c   ON c.id   = te.class_id
        LEFT JOIN subjects sub ON sub.id  = te.subject_id
        LEFT JOIN periods  p   ON p.id   = te.period_id
        WHERE te.teacher_id = $1 AND te.day_of_week = $2
-       ORDER BY te.class_id, p.period_number ASC NULLS LAST`,
+       ORDER BY te.class_id, p.period_no ASC NULLS LAST`,
       [teacher_id, dayName]
     );
 
@@ -687,7 +702,7 @@ const getTeacherQuickList = async (req, res) => {
       const [studentsRes, existingRes, lateRes] = await Promise.all([
         pool.query(
           `SELECT id, full_name, roll_number, father_name
-           FROM students WHERE class_id = $1 AND status = 'active'
+           FROM students WHERE class_id = $1 AND status = 'active' AND deleted_at IS NULL
            ORDER BY roll_number ASC NULLS LAST, full_name ASC`,
           [entry.class_id]
         ),
@@ -725,7 +740,7 @@ const getTeacherQuickList = async (req, res) => {
         grade:         entry.grade,
         section:       entry.section,
         subject_name:  entry.subject_name,
-        period_number: entry.period_number,
+        period_number: entry.period_no,
         start_time:    entry.start_time,
         end_time:      entry.end_time,
         students,

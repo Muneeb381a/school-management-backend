@@ -104,6 +104,9 @@ const budgetRoutes             = require('./routes/budgetRoutes');
 const websiteRoutes            = require('./routes/websiteRoutes');
 const trackingRoutes           = require('./routes/trackingRoutes');
 const chatRoutes               = require('./routes/chatRoutes');
+const chatbotRoutes            = require('./routes/chatbotRoutes');
+const rbacRoutes               = require('./routes/rbacRoutes');
+const lifecycleRoutes          = require('./routes/lifecycleRoutes');
 const { metricsMiddleware }   = require('./services/metricsService');
 
 const app = express();
@@ -386,6 +389,9 @@ const routeMap = [
   ['/website',              websiteRoutes],
   ['/tracking',             trackingRoutes],
   ['/chat',                 chatRoutes],
+  ['/chatbot',              chatbotRoutes],
+  ['/rbac',                 rbacRoutes],
+  ['/lifecycle',            lifecycleRoutes],
 ];
 
 for (const [path, router] of routeMap) {

@@ -1,6 +1,7 @@
 const jwt      = require('jsonwebtoken');
 const AppError = require('../utils/AppError');
 const db       = require('../db');
+const { hasPermissionInDb } = require('../services/permissionService');
 
 const ACCESS_SECRET = process.env.JWT_SECRET;
 if (!ACCESS_SECRET) {
@@ -115,10 +116,51 @@ function requirePasswordChanged(req, _res, next) {
   next();
 }
 
+/**
+ * Permission-based access control (RBAC).
+ * Usage: router.post('/', checkPermission('students:create'), handler)
+ *
+ * Check order:
+ *  1. Admin role → always passes
+ *  2. JWT-embedded permissions (fast, no DB) → pass if found
+ *  3. DB lookup (fallback for stale tokens or fresh permission changes)
+ *
+ * @param {string} permKey - e.g. 'students:create', 'fees:export'
+ */
+function checkPermission(permKey) {
+  return async (req, _res, next) => {
+    if (!req.user) {
+      return next(new AppError('Authentication required.', 401, 'UNAUTHORIZED'));
+    }
+
+    // 1. Admin bypasses all permission checks
+    if (req.user.role === 'admin') return next();
+
+    // 2. Fast path: check JWT-embedded permissions array (set at login)
+    const jwtPerms = Array.isArray(req.user.permissions) ? req.user.permissions : [];
+    if (jwtPerms.includes(permKey)) return next();
+
+    // 3. DB fallback — handles stale tokens or permission changes made after login
+    try {
+      const allowed = await hasPermissionInDb(req.user.role, permKey, req.user.id);
+      if (allowed) return next();
+    } catch {
+      // If permission tables don't exist yet (cold deploy), fail open for admins,
+      // fail closed for everyone else — already handled above.
+    }
+
+    return next(new AppError(
+      `Access denied. You do not have permission to perform this action.`,
+      403, 'FORBIDDEN'
+    ));
+  };
+}
+
 module.exports = {
   verifyToken,
   requireRole,
   requireSuperAdmin,
   requireOwnerOrAdmin,
   requirePasswordChanged,
+  checkPermission,
 };

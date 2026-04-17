@@ -68,17 +68,22 @@ async function getLiveBus(req, res) {
 // Admin: overview of all buses with their current live state.
 async function getAllBusesLive(req, res) {
   const { rows } = await db.query(
-    `SELECT b.id, b.bus_number, b.vehicle_number, b.status,
+    `SELECT b.id, b.bus_number, b.vehicle_number, b.vehicle_type, b.capacity, b.status,
             b.current_lat, b.current_lng, b.current_speed,
             b.last_seen, b.is_online, b.trip_status,
-            b.driver_name, b.driver_user_id,
-            u.name AS driver_user_name,
-            r.route_name
+            COALESCE(d.full_name, b.driver_name)   AS driver_name,
+            COALESCE(d.phone,     b.driver_phone)  AS driver_phone,
+            d.photo_url AS driver_photo,
+            b.driver_user_id,
+            r.route_name, r.id AS route_id,
+            COUNT(st.id)::INT AS passenger_count
      FROM buses b
-     LEFT JOIN users u ON u.id = b.driver_user_id
+     LEFT JOIN drivers d ON d.id = b.driver_id
      LEFT JOIN bus_route_assignments bra ON bra.bus_id = b.id AND bra.is_active = true
      LEFT JOIN transport_routes r ON r.id = bra.route_id
+     LEFT JOIN student_transport st ON st.bus_id = b.id AND st.status = 'active'
      WHERE b.status = 'active'
+     GROUP BY b.id, d.full_name, b.driver_name, d.phone, b.driver_phone, d.photo_url, r.route_name, r.id
      ORDER BY b.is_online DESC, b.bus_number`
   );
 
@@ -137,7 +142,6 @@ async function getRouteStops(req, res) {
      JOIN bus_route_assignments bra ON bra.route_id = rs.route_id
      JOIN transport_routes r ON r.id = bra.route_id
      WHERE bra.bus_id = $1 AND bra.is_active = true
-       AND rs.latitude IS NOT NULL AND rs.longitude IS NOT NULL
      ORDER BY rs.stop_order`, [busId]
   );
   res.json({ success: true, data: rows });

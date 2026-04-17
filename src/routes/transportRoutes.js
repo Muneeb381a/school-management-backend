@@ -1,67 +1,78 @@
 const express = require('express');
 const router  = express.Router();
-const {
-  getBuses, getBusById, createBus, updateBus, deleteBus,
-  getRoutes, getRouteById, createRoute, updateRoute, deleteRoute,
-  getStops, addStop, updateStop, deleteStop,
-  getAssignments, createAssignment, updateAssignment, deleteAssignment,
-  getSummary, getStudentsWithoutTransport,
-} = require('../controllers/transportController');
+const transport = require('../controllers/transportController');
+const driver    = require('../controllers/driverController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
 const asyncHandler        = require('../utils/asyncHandler');
+const { photoUpload }     = require('../middleware/upload');
 const db                  = require('../db');
 
 router.use(auditMiddleware('transport'));
 
-// Driver: returns the bus assigned to the logged-in driver (by driver_user_id)
+// ── Driver self-lookup (used by driver app / tracking page) ──────────────────
 router.get('/my-bus-driver', asyncHandler(async (req, res) => {
   const { rows } = await db.query(
-    `SELECT b.id, b.bus_number, b.vehicle_number, b.make_model,
+    `SELECT b.id, b.bus_number, b.vehicle_number, b.vehicle_type, b.make_model,
             b.driver_name, b.driver_phone, b.status,
             b.current_lat, b.current_lng, b.is_online, b.trip_status,
+            d.full_name AS driver_full_name, d.cnic, d.phone AS driver_mobile,
             r.route_name, r.id AS route_id
      FROM buses b
+     LEFT JOIN drivers d ON d.id = b.driver_id
      LEFT JOIN bus_route_assignments bra ON bra.bus_id = b.id AND bra.is_active = true
      LEFT JOIN transport_routes r ON r.id = bra.route_id
-     WHERE b.driver_user_id = $1 AND b.status = 'active'
+     WHERE (b.driver_user_id = $1 OR d.user_id = $1) AND b.status = 'active'
      LIMIT 1`,
     [req.user.id]
   );
-  if (!rows.length) {
-    return res.status(404).json({ success: false, message: 'No active bus assigned to this driver' });
-  }
-  res.json({ success: true, data: rows[0] });
+  res.json({ success: true, data: rows[0] ?? null });
 }));
 
-// Summary
-router.get('/summary',                    requireRole('admin', 'teacher'), getSummary);
-router.get('/students-without-transport', requireRole('admin', 'teacher'), getStudentsWithoutTransport);
+// ── Summary & unassigned students ────────────────────────────────────────────
+router.get('/summary',                    requireRole('admin','teacher'), asyncHandler(transport.getSummary));
+router.get('/students-without-transport', requireRole('admin','teacher'), asyncHandler(transport.getStudentsWithoutTransport));
 
-// Buses
-router.get('/buses',        requireRole('admin', 'teacher'), getBuses);
-router.post('/buses',       requireRole('admin'),            createBus);
-router.get('/buses/:id',    requireRole('admin', 'teacher'), getBusById);
-router.put('/buses/:id',    requireRole('admin'),            updateBus);
-router.delete('/buses/:id', requireRole('admin'),            deleteBus);
+// ── Vehicles (Buses) ─────────────────────────────────────────────────────────
+router.get   ('/buses',         requireRole('admin','teacher'), asyncHandler(transport.getBuses));
+router.post  ('/buses',         requireRole('admin'),           asyncHandler(transport.createBus));
+router.get   ('/buses/:id',     requireRole('admin','teacher'), asyncHandler(transport.getBusById));
+router.put   ('/buses/:id',     requireRole('admin'),           asyncHandler(transport.updateBus));
+router.delete('/buses/:id',     requireRole('admin'),           asyncHandler(transport.deleteBus));
 
-// Routes
-router.get('/routes',           requireRole('admin', 'teacher'), getRoutes);
-router.post('/routes',          requireRole('admin'),            createRoute);
-router.get('/routes/:id',       requireRole('admin', 'teacher'), getRouteById);
-router.put('/routes/:id',       requireRole('admin'),            updateRoute);
-router.delete('/routes/:id',    requireRole('admin'),            deleteRoute);
+// ── Drivers ───────────────────────────────────────────────────────────────────
+router.get   ('/drivers',       requireRole('admin','teacher'), asyncHandler(driver.getDrivers));
+router.post  ('/drivers',       requireRole('admin'),           photoUpload.single('photo'), asyncHandler(driver.createDriver));
+router.get   ('/drivers/:id',   requireRole('admin','teacher'), asyncHandler(driver.getDriverById));
+router.put   ('/drivers/:id',   requireRole('admin'),           photoUpload.single('photo'), asyncHandler(driver.updateDriver));
+router.delete('/drivers/:id',   requireRole('admin'),           asyncHandler(driver.deleteDriver));
 
-// Stops
-router.get('/routes/:routeId/stops',  requireRole('admin', 'teacher'), getStops);
-router.post('/routes/:routeId/stops', requireRole('admin'),            addStop);
-router.put('/stops/:id',              requireRole('admin'),            updateStop);
-router.delete('/stops/:id',           requireRole('admin'),            deleteStop);
+// ── Routes ────────────────────────────────────────────────────────────────────
+router.get   ('/routes',        requireRole('admin','teacher'), asyncHandler(transport.getRoutes));
+router.post  ('/routes',        requireRole('admin'),           asyncHandler(transport.createRoute));
+router.get   ('/routes/:id',    requireRole('admin','teacher'), asyncHandler(transport.getRouteById));
+router.put   ('/routes/:id',    requireRole('admin'),           asyncHandler(transport.updateRoute));
+router.delete('/routes/:id',    requireRole('admin'),           asyncHandler(transport.deleteRoute));
 
-// Assignments
-router.get('/assignments',      requireRole('admin', 'teacher'), getAssignments);
-router.post('/assignments',     requireRole('admin'),            createAssignment);
-router.put('/assignments/:id',  requireRole('admin'),            updateAssignment);
-router.delete('/assignments/:id', requireRole('admin'),          deleteAssignment);
+// ── Stops ─────────────────────────────────────────────────────────────────────
+router.get   ('/routes/:routeId/stops', requireRole('admin','teacher'), asyncHandler(transport.getStops));
+router.post  ('/routes/:routeId/stops', requireRole('admin'),           asyncHandler(transport.addStop));
+router.put   ('/stops/:id',             requireRole('admin'),           asyncHandler(transport.updateStop));
+router.delete('/stops/:id',             requireRole('admin'),           asyncHandler(transport.deleteStop));
+
+// ── Student assignments ───────────────────────────────────────────────────────
+router.get   ('/assignments',        requireRole('admin','teacher'), asyncHandler(transport.getAssignments));
+router.post  ('/assignments',        requireRole('admin'),           asyncHandler(transport.createAssignment));
+router.put   ('/assignments/:id',    requireRole('admin'),           asyncHandler(transport.updateAssignment));
+router.delete('/assignments/:id',    requireRole('admin'),           asyncHandler(transport.deleteAssignment));
+
+// Transfer student to a different bus/route
+router.post('/assignments/:id/transfer', requireRole('admin'), asyncHandler(transport.transferStudent));
+
+// Transfer history for a student
+router.get('/students/:studentId/transfer-history', requireRole('admin','teacher'), asyncHandler(transport.getTransferHistory));
+
+// ── PDF transport slip ────────────────────────────────────────────────────────
+router.get('/assignments/:id/pdf', requireRole('admin','teacher'), asyncHandler(transport.generatePdf));
 
 module.exports = router;

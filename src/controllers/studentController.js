@@ -10,6 +10,7 @@ const { sendMail }                              = require('../utils/mailer');
 const { serverErr }      = require('../utils/serverErr');
 const { genTempPassword } = require('../utils/genTempPassword');
 const { fireWebhooks }    = require('../utils/webhookDispatcher');
+const { logLifecycleEvent, logLifecycleBatch } = require('../services/lifecycleService');
 
 const ALL_FIELDS = [
   'class_id',
@@ -180,6 +181,15 @@ const createStudent = async (req, res, next) => {
       admission_date:   student.admission_date,
     }).catch(() => {});
 
+    logLifecycleEvent({
+      studentId:   student.id,
+      eventType:   'admission',
+      title:       `Admitted — ${student.admission_number}`,
+      description: `Enrolled in ${student.grade || ''} ${student.section || ''}`.trim() || null,
+      metadata:    { admission_number: student.admission_number, class_id: student.class_id, grade: student.grade },
+      performedBy: req.user.id,
+    }).catch(() => {});
+
     res.status(201).json({
       success:     true,
       data:        student,
@@ -221,6 +231,14 @@ const deleteStudent = async (req, res, next) => {
       [req.params.id]
     );
     if (!rows[0]) throw new AppError('Student not found.', 404);
+    logLifecycleEvent({
+      studentId:   rows[0].id,
+      eventType:   'withdrawal',
+      title:       'Student record archived',
+      description: 'Student was soft-deleted from the system.',
+      metadata:    { deleted_by_role: req.user.role },
+      performedBy: req.user.id,
+    }).catch(() => {});
     invalidateDashboard().catch(() => {});
     res.json({ success: true, message: 'Student deleted successfully.' });
   } catch (err) {
@@ -284,6 +302,15 @@ const promoteStudents = async (req, res, next) => {
         student_ids:     rows.map(r => r.id),
         promoted_at:     new Date().toISOString(),
       }).catch(() => {});
+
+      logLifecycleBatch(rows.map(r => ({
+        studentId:   r.id,
+        eventType:   'promotion',
+        title:       'Promoted to next class',
+        description: `Moved from class ${from_class_id} to class ${to_class_id}`,
+        metadata:    { from_class_id, to_class_id, grade, section },
+        performedBy: req.user.id,
+      }))).catch(() => {});
     }
 
     res.json({ success: true, promoted: rows.length, message: `${rows.length} student(s) promoted successfully.` });

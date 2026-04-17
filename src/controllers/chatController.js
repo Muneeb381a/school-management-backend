@@ -170,6 +170,9 @@ async function getMessages(req, res) {
     params.push(before);
     cursorSql = `AND m.id < $${params.length}`;
   }
+  // Add user id AFTER the optional cursor so its index is always correct
+  params.push(req.user.id);
+  const userIdx = params.length; // $3 when no cursor, $4 when cursor present
 
   const { rows } = await db.query(
     `SELECT
@@ -191,7 +194,7 @@ async function getMessages(req, res) {
          FROM (
            SELECT emoji,
                   COUNT(*)::int AS count,
-                  BOOL_OR(user_id = $3) AS reacted_by_me
+                  BOOL_OR(user_id = $${userIdx}) AS reacted_by_me
            FROM chat_reactions
            WHERE message_id = m.id
            GROUP BY emoji
@@ -205,7 +208,7 @@ async function getMessages(req, res) {
        ${cursorSql}
      ORDER BY m.id DESC
      LIMIT $2`,
-    [...params, req.user.id]
+    params
   );
 
   // Return in ascending order (oldest at top, like Slack)

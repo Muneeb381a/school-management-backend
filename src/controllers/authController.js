@@ -5,6 +5,7 @@ const db      = require('../db');
 const AppError  = require('../utils/AppError');
 const { logAction } = require('../middleware/auditLog');
 const { sendMail }  = require('../utils/mailer');
+const { fetchPermissionsForRole } = require('../services/permissionService');
 
 // ── Secrets ───────────────────────────────────────────────────────────────────
 const ACCESS_SECRET  = process.env.JWT_SECRET;
@@ -200,6 +201,22 @@ async function login(req, res, next) {
     // Every authenticated API call: authMiddleware reads this field and calls
     // db.schemaStore.run(schema, next) — making every pool.query target this school.
     //
+    // Fetch permissions for this role (embedded in JWT for fast permission checks)
+    // Wrapped in try/catch — if the permissions table hasn't been migrated yet,
+    // login must still succeed. Permissions will default to [].
+    const permissions = await withSchema(schema, async (client) => {
+      const { rows } = await client.query(
+        `SELECT p.key
+         FROM permissions p
+         JOIN role_permissions rp ON rp.permission_id = p.id
+         JOIN roles r ON r.id = rp.role_id
+         WHERE r.name = $1
+         ORDER BY p.sort_order`,
+        [result.role]
+      );
+      return rows.map(r => r.key);
+    }).catch(() => []);
+
     const payload = {
       id:                 result.id,
       username:           result.username,
@@ -207,6 +224,7 @@ async function login(req, res, next) {
       role:               result.role,
       entity_id:          result.entity_id,
       mustChangePassword: result.must_change_password || false,
+      permissions,          // ← RBAC: array of 'module:action' keys
       // Multi-tenant fields — undefined in single-tenant mode (cleaner than null)
       ...(tenantInfo && {
         schema:      tenantInfo.schema,
@@ -291,12 +309,17 @@ async function refresh(req, res, next) {
       }
     }
 
+    // Re-fetch permissions on refresh so tokens always carry fresh permissions
+    const freshPermissions = await fetchPermissionsForRole(user.role, user.id).catch(() => []);
+
     const newAccessToken = signAccess({
-      id:        user.id,
-      username:  user.username,
-      name:      user.name,
-      role:      user.role,
-      entity_id: user.entity_id,
+      id:                 user.id,
+      username:           user.username,
+      name:               user.name,
+      role:               user.role,
+      entity_id:          user.entity_id,
+      mustChangePassword: user.must_change_password || false,  // ← must be re-embedded every refresh
+      permissions:        freshPermissions,
       ...schoolInfo,
     });
 
@@ -342,8 +365,16 @@ async function changePassword(req, res, next) {
     const valid = await bcrypt.compare(current_password, user.password);
     if (!valid) throw new AppError('Current password is incorrect.', 401, 'WRONG_PASSWORD');
 
-    if (new_password.length < 8) {
-      throw new AppError('Password must be at least 8 characters.', 400);
+    // Reject same-as-current password (validator checks length/strength; controller adds this)
+    const sameAsCurrent = await bcrypt.compare(new_password, user.password);
+    if (sameAsCurrent) {
+      throw new AppError('New password must be different from your current password.', 400);
+    }
+
+    // Belt-and-suspenders strength check (validator middleware also enforces these)
+    if (new_password.length < 8) throw new AppError('Password must be at least 8 characters.', 400);
+    if (!/[A-Z]/.test(new_password) || !/[0-9]/.test(new_password)) {
+      throw new AppError('Password must contain at least one uppercase letter and one number.', 400);
     }
 
     const hashed = await bcrypt.hash(new_password, 12);
