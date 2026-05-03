@@ -32,6 +32,9 @@ CREATE TABLE teachers (
   status            VARCHAR(20)   DEFAULT 'active'  CHECK (status IN ('active','inactive','on_leave')),
   address           TEXT,
   assigned_grades   TEXT[],                -- e.g. ARRAY['Class 5','Class 6']
+  salary            NUMERIC(12,2),
+  designation       VARCHAR(120),
+  employee_id       VARCHAR(40)   UNIQUE,
   created_at        TIMESTAMPTZ   DEFAULT NOW()
 );
 

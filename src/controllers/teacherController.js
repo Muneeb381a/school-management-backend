@@ -143,6 +143,7 @@ const createTeacher = async (req, res) => {
     const {
       full_name, email, phone, gender, date_of_birth,
       qualification, subject, join_date, status, address, assigned_grades,
+      salary, designation, employee_id,
     } = req.body;
 
     if (!full_name?.trim()) {
@@ -155,8 +156,9 @@ const createTeacher = async (req, res) => {
     const { rows } = await client.query(
       `INSERT INTO teachers
          (full_name, email, phone, gender, date_of_birth,
-          qualification, subject, join_date, status, address, assigned_grades)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          qualification, subject, join_date, status, address, assigned_grades,
+          salary, designation, employee_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        RETURNING *`,
       [
         full_name.trim(),
@@ -170,6 +172,9 @@ const createTeacher = async (req, res) => {
         status    || 'active',
         address   || null,
         assigned_grades?.length ? assigned_grades : null,
+        salary      != null ? Number(salary) : null,
+        designation || null,
+        employee_id || null,
       ]
     );
     const teacher  = rows[0];
@@ -299,6 +304,7 @@ const updateTeacher = async (req, res) => {
     const {
       full_name, email, phone, gender, date_of_birth,
       qualification, subject, join_date, status, address, assigned_grades,
+      salary, designation, employee_id,
     } = req.body;
 
     if (!full_name?.trim()) {
@@ -309,8 +315,9 @@ const updateTeacher = async (req, res) => {
       `UPDATE teachers SET
          full_name=$1, email=$2, phone=$3, gender=$4, date_of_birth=$5,
          qualification=$6, subject=$7, join_date=$8, status=$9,
-         address=$10, assigned_grades=$11
-       WHERE id=$12
+         address=$10, assigned_grades=$11,
+         salary=$12, designation=$13, employee_id=$14
+       WHERE id=$15
        RETURNING *`,
       [
         full_name.trim(),
@@ -324,6 +331,9 @@ const updateTeacher = async (req, res) => {
         status    || 'active',
         address   || null,
         assigned_grades?.length ? assigned_grades : null,
+        salary      != null ? Number(salary) : null,
+        designation || null,
+        employee_id || null,
         req.params.id,
       ]
     );

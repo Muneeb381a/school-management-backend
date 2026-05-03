@@ -416,6 +416,44 @@ const generateMonthlyFees = async (req, res) => {
         }
       }
 
+      // ── Carry-forward arrears ───────────────────────────────────────────
+      // If fee_policy.carry_forward=true, add any unpaid balance from previous
+      // months as an "Arrears" line item in this invoice.
+      const { rows: policyRows } = await client.query(
+        `SELECT carry_forward, carry_forward_label
+         FROM fee_policy WHERE academic_year = $1 LIMIT 1`,
+        [year]
+      );
+      const policy = policyRows[0];
+      if (policy?.carry_forward) {
+        const { rows: arrearsRows } = await client.query(
+          `SELECT COALESCE(
+             SUM(fi.total_amount + fi.fine_amount - fi.discount_amount - fi.paid_amount), 0
+           ) AS arrears
+           FROM fee_invoices fi
+           WHERE fi.student_id = $1
+             AND fi.status IN ('unpaid','partial','overdue')
+             AND (fi.billing_month IS NULL OR fi.billing_month < $2)
+             AND fi.id != $3`,
+          [student.id, billing_month, iid]
+        );
+        const arrears = parseFloat(arrearsRows[0]?.arrears || 0);
+        if (arrears > 0.01) {
+          const label = policy.carry_forward_label || 'Arrears';
+          await client.query(
+            `INSERT INTO fee_invoice_items (invoice_id, fee_head_id, description, amount)
+             VALUES ($1, NULL, $2, $3)`,
+            [iid, `${label} (previous months)`, arrears]
+          );
+          await client.query(
+            `UPDATE fee_invoices
+             SET total_amount = total_amount + $1, updated_at = NOW()
+             WHERE id = $2`,
+            [arrears, iid]
+          );
+        }
+      }
+
       created++;
     }
 

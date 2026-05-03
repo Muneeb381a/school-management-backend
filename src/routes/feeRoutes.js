@@ -14,6 +14,20 @@ const {
   sendFeeReminders,
   getSiblingGroups, getSiblingVoucher,
 } = require('../controllers/feeController');
+
+const {
+  getLateRules, createLateRule, updateLateRule, deleteLateRule, runLateFeeEngine,
+  getFeePolicy, upsertFeePolicy,
+  getStudentLedger,
+  getRevenueTrend, getClassComparison, getCollectionRate, getForecast, getDefaulterHeatmap,
+  getAdjustments, createAdjustment, approveAdjustment, rejectAdjustment,
+  getDefaulterActions, addDefaulterAction, getDefaultersList,
+  rolloverFeeStructures,
+  getCollectionTargets, setCollectionTarget, deleteCollectionTarget,
+  getCollectorReport,
+  verifyReceipt,
+} = require('../controllers/feeAdvancedController');
+
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
 const { csvUpload }       = require('../middleware/upload');
@@ -78,5 +92,53 @@ router.post('/send-reminders',         requireRole('admin'),            sendFeeR
 // Sibling vouchers (read-only, no DB writes)
 router.get('/sibling-groups',  requireRole('admin', 'teacher'), getSiblingGroups);
 router.get('/sibling-voucher', requireRole('admin', 'teacher'), getSiblingVoucher);
+
+// ── ADVANCED FEE MODULE ────────────────────────────────────────────────────
+
+// Late fee rules engine
+router.get('/late-rules',          requireRole('admin'),            getLateRules);
+router.post('/late-rules',         requireRole('admin'),            createLateRule);
+router.put('/late-rules/:id',      requireRole('admin'),            updateLateRule);
+router.delete('/late-rules/:id',   requireRole('admin'),            deleteLateRule);
+router.post('/late-rules/run',     requireRole('admin'),            runLateFeeEngine);
+
+// Fee policy (per academic year)
+router.get('/policy/:year',        requireRole('admin'),            getFeePolicy);
+router.put('/policy/:year',        requireRole('admin'),            upsertFeePolicy);
+
+// Student ledger (bank-statement view)
+router.get('/ledger/:studentId',   requireRole('admin', 'teacher'), getStudentLedger);
+
+// Revenue analytics
+router.get('/analytics/revenue-trend',    requireRole('admin', 'teacher'), getRevenueTrend);
+router.get('/analytics/class-comparison', requireRole('admin', 'teacher'), getClassComparison);
+router.get('/analytics/collection-rate',  requireRole('admin', 'teacher'), getCollectionRate);
+router.get('/analytics/forecast',         requireRole('admin', 'teacher'), getForecast);
+router.get('/analytics/defaulter-heatmap',requireRole('admin', 'teacher'), getDefaulterHeatmap);
+
+// Fee adjustments (waiver / refund / correction)
+router.get('/adjustments',              requireRole('admin', 'teacher'), getAdjustments);
+router.post('/adjustments',             requireRole('admin', 'teacher'), createAdjustment);
+router.post('/adjustments/:id/approve', requireRole('admin'),            approveAdjustment);
+router.post('/adjustments/:id/reject',  requireRole('admin'),            rejectAdjustment);
+
+// Defaulter workflow
+router.get('/defaulters/list',    requireRole('admin', 'teacher'), getDefaultersList);
+router.get('/defaulters/actions', requireRole('admin', 'teacher'), getDefaulterActions);
+router.post('/defaulters/actions',requireRole('admin', 'teacher'), addDefaulterAction);
+
+// Per-collector daily report
+router.get('/reports/collector', requireRole('admin'), getCollectorReport);
+
+// Annual rollover
+router.post('/rollover', requireRole('admin'), rolloverFeeStructures);
+
+// Collection targets
+router.get('/targets',        requireRole('admin', 'teacher'), getCollectionTargets);
+router.post('/targets',       requireRole('admin'),            setCollectionTarget);
+router.delete('/targets/:id', requireRole('admin'),            deleteCollectionTarget);
+
+// Public receipt verification (no auth — for QR scanning)
+router.get('/verify-receipt/:receiptNo', verifyReceipt);
 
 module.exports = router;

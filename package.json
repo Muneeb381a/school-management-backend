@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
+    "db:migrate": "node src/db/migrate.js",
     "db:init": "node src/db/init.js",
     "db:seed": "node src/db/seed.js",
     "db:seed-phase6": "node src/db/seed_phase6.js",
