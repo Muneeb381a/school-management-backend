@@ -23,12 +23,12 @@ async function seed() {
   for (const u of USERS) {
     const hashed = await bcrypt.hash(u.password, 10);
     await pool.query(
-      `INSERT INTO users (username, password, role, name, entity_id)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO users (username, password, role, name, entity_id, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, TRUE)
        ON CONFLICT (username) DO NOTHING`,
       [u.username, hashed, u.role, u.name, u.entity_id]
     );
-    console.log(`  ✅ ${u.role.padEnd(8)} → username: ${u.username}  password: ${u.password}`);
+    console.log(`  ✅ ${u.role.padEnd(8)} → username: ${u.username}`);
   }
   await pool.end();
   console.log('\n✅ Seed complete.');

@@ -1,7 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const {
-  getItems, getItem, createItem, updateItem, deleteItem, getSummary,
+  getItems, getItem, createItem, updateItem, deleteItem, getSummary, getLowStock,
   getImportTemplate, importInventory, exportInventory,
 } = require('../controllers/inventoryController');
 const { requireRole }     = require('../middleware/authMiddleware');
@@ -14,7 +14,8 @@ router.get('/import/template', requireRole('admin'), getImportTemplate);
 router.post('/import',         requireRole('admin'), csvUpload.single('file'), importInventory);
 router.get('/export',          requireRole('admin', 'teacher'), exportInventory);
 
-router.get('/summary', requireRole('admin', 'teacher'), getSummary);
+router.get('/summary',   requireRole('admin', 'teacher'), getSummary);
+router.get('/low-stock', requireRole('admin', 'teacher'), getLowStock);
 router.get('/',        requireRole('admin', 'teacher'), getItems);
 router.get('/:id',     requireRole('admin', 'teacher'), getItem);
 router.post('/',       requireRole('admin'),            createItem);

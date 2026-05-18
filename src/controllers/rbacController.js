@@ -5,7 +5,9 @@
  */
 
 const db       = require('../db');
+const bcrypt   = require('bcryptjs');
 const AppError = require('../utils/AppError');
+const { genTempPassword } = require('../utils/genTempPassword');
 
 // ── GET /api/rbac/permissions ─────────────────────────────────────────────────
 // Returns all permissions grouped by module, with sort_order.
@@ -405,6 +407,57 @@ async function getSummary(req, res) {
   res.json({ success: true, data: rows });
 }
 
+// ── POST /api/rbac/users ──────────────────────────────────────────────────────
+// Create a standalone user account with a specific role and auto-generated password.
+async function createUser(req, res) {
+  const { name, username, role, email } = req.body;
+  if (!name?.trim())     throw new AppError('name is required', 400);
+  if (!username?.trim()) throw new AppError('username is required', 400);
+  if (!role)             throw new AppError('role is required', 400);
+
+  const clean = username.trim().toLowerCase().replace(/\s+/g, '_');
+
+  // Validate role exists
+  const { rows: [roleRow] } = await db.query(`SELECT id FROM roles WHERE name = $1`, [role]);
+  if (!roleRow) throw new AppError(`Role "${role}" does not exist`, 400);
+
+  // Check username uniqueness
+  const { rows: [dup] } = await db.query(`SELECT id FROM users WHERE username = $1`, [clean]);
+  if (dup) throw new AppError('Username already taken', 409);
+
+  const rawPw  = genTempPassword();
+  const hashed = await bcrypt.hash(rawPw, 10);
+
+  const { rows: [user] } = await db.query(
+    `INSERT INTO users (name, username, password, role, must_change_password)
+     VALUES ($1, $2, $3, $4, TRUE)
+     RETURNING id, name, username, role, created_at`,
+    [name.trim(), clean, hashed, role]
+  );
+
+  res.status(201).json({
+    success: true,
+    data: user,
+    credentials: { username: clean, tempPassword: rawPw },
+    message: `User "${clean}" created. Share the temporary password — it will not be shown again.`,
+  });
+}
+
+// ── DELETE /api/rbac/users/:userId ────────────────────────────────────────────
+// Deactivate (soft-delete) a user. Cannot deactivate yourself.
+async function deactivateUser(req, res) {
+  const { userId } = req.params;
+  if (+userId === req.user.id) throw new AppError('Cannot deactivate your own account', 400);
+
+  const { rows: [user] } = await db.query(
+    `UPDATE users SET is_active = FALSE WHERE id = $1 AND is_active = TRUE RETURNING id, name`,
+    [userId]
+  );
+  if (!user) throw new AppError('User not found or already inactive', 404);
+
+  res.json({ success: true, message: `User "${user.name}" deactivated` });
+}
+
 module.exports = {
   listPermissions,
   listRoles,
@@ -418,4 +471,6 @@ module.exports = {
   getUserPermissions,
   setUserPermissions,
   getSummary,
+  createUser,
+  deactivateUser,
 };

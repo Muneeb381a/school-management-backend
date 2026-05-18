@@ -53,9 +53,9 @@ async function seed() {
     [username, hashed, email]
   );
 
-  console.log('  ✅ super_admin → username: superadmin  password: superadmin123');
+  console.log('  ✅ super_admin → username: superadmin');
   console.log('\n✅ Super-admin seed complete.');
-  console.log('\n⚠️  Remember to change the password after first login!\n');
+  console.log('\n⚠️  Change the password immediately after first login!\n');
 
   await pool.end();
 }

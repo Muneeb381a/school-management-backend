@@ -41,6 +41,10 @@ function validateEnv() {
         console.warn(`\n⚠️   WARNING: ${key} looks like a placeholder value. Rotate it before going live.\n`);
       }
     });
+
+    if (!process.env.CORS_ORIGINS) {
+      console.warn('\n⚠️   WARNING: CORS_ORIGINS is not set. No origins will be allowed in production.\n');
+    }
   }
 
   console.log('✅  Environment validated.');

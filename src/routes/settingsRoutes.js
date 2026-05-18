@@ -6,6 +6,7 @@ const {
 } = require('../controllers/settingsController');
 const {
   getWebhooks, createWebhook, updateWebhook, deleteWebhook, testWebhook, getWebhookLogs,
+  verifyInboundWebhook,
 } = require('../controllers/webhookController');
 const { photoUpload }   = require('../middleware/upload');
 const { requireRole }   = require('../middleware/authMiddleware');
@@ -34,5 +35,13 @@ router.put('/webhooks/:id',          requireRole('admin'), updateWebhook);
 router.delete('/webhooks/:id',       requireRole('admin'), deleteWebhook);
 router.post('/webhooks/:id/test',    requireRole('admin'), testWebhook);
 router.get('/webhooks/:id/logs',     requireRole('admin'), getWebhookLogs);
+
+// Inbound webhook receiver — partners POST here with X-Webhook-Signature header
+// Secret is taken from INBOUND_WEBHOOK_SECRET env var
+router.post(
+  '/webhooks/inbound',
+  verifyInboundWebhook(process.env.INBOUND_WEBHOOK_SECRET),
+  (req, res) => res.json({ success: true, received: true })
+);
 
 module.exports = router;

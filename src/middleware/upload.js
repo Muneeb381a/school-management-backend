@@ -9,8 +9,43 @@ const DOC_TYPES   = [
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ];
 
+// Magic byte signatures — confirms file content matches declared MIME type
+const MAGIC_SIGNATURES = {
+  'image/jpeg': [[0xFF, 0xD8, 0xFF]],
+  'image/png':  [[0x89, 0x50, 0x4E, 0x47]],
+  'image/webp': [[0x52, 0x49, 0x46, 0x46]],   // RIFF header
+  'application/pdf': [[0x25, 0x50, 0x44, 0x46]], // %PDF
+  'application/msword': [[0xD0, 0xCF, 0x11, 0xE0]], // OLE2
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+    [[0x50, 0x4B, 0x03, 0x04], [0x50, 0x4B, 0x05, 0x06]], // ZIP
+};
+
+function matchesMagicBytes(buffer, mimetype) {
+  const sigs = MAGIC_SIGNATURES[mimetype];
+  if (!sigs || !buffer || buffer.length < 4) return true; // unknown type: pass through
+  return sigs.some(sig => sig.every((byte, i) => buffer[i] === byte));
+}
+
+// Wraps a multer middleware to add magic-byte validation after buffering
+function withMagicCheck(multerMiddleware) {
+  return (req, res, next) => {
+    multerMiddleware(req, res, (err) => {
+      if (err) return next(err);
+      const files = req.files
+        ? Object.values(req.files).flat()
+        : req.file ? [req.file] : [];
+      for (const f of files) {
+        if (!matchesMagicBytes(f.buffer, f.mimetype)) {
+          return next(new Error(`File "${f.originalname}" content does not match its declared type.`));
+        }
+      }
+      next();
+    });
+  };
+}
+
 function makeUploader(allowedTypes) {
-  return multer({
+  const uploader = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
     fileFilter: (_req, file, cb) => {
@@ -18,6 +53,17 @@ function makeUploader(allowedTypes) {
       cb(new Error(`Only ${allowedTypes.join(', ')} files are allowed`));
     },
   });
+
+  // Override .single() and .array() to auto-apply magic byte check
+  const originalSingle = uploader.single.bind(uploader);
+  const originalArray  = uploader.array.bind(uploader);
+  const originalFields = uploader.fields.bind(uploader);
+
+  uploader.single = (field) => withMagicCheck(originalSingle(field));
+  uploader.array  = (field, max) => withMagicCheck(originalArray(field, max));
+  uploader.fields = (fields) => withMagicCheck(originalFields(fields));
+
+  return uploader;
 }
 
 const photoUpload = makeUploader(IMAGE_TYPES);

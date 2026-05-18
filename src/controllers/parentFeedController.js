@@ -18,10 +18,27 @@ const getParentFeed = async (req, res) => {
     const callerId   = req.user.id;
     const callerRole = req.user.role;
 
-    // Resolve student_id: parents use their entity_id; admins/teachers pass it as query param
+    // Resolve student_id
+    // - Parent with multiple children: must pass ?student_id= to pick one child;
+    //   if omitted, defaults to first (eldest) enrolled child
     let studentId = req.query.student_id ? parseInt(req.query.student_id) : null;
     if (callerRole === 'parent') {
-      studentId = req.user.entity_id;
+      if (studentId) {
+        // Security: verify this student actually belongs to the calling parent
+        const { rows: check } = await pool.query(
+          `SELECT id FROM students WHERE id=$1 AND parent_user_id=$2 AND deleted_at IS NULL`,
+          [studentId, callerId]
+        );
+        if (!check[0]) return res.status(403).json({ success: false, message: 'Access denied to this student' });
+      } else {
+        // No student_id given — pick the first child of this parent
+        const { rows: children } = await pool.query(
+          `SELECT id FROM students WHERE parent_user_id=$1 AND deleted_at IS NULL ORDER BY id ASC LIMIT 1`,
+          [callerId]
+        );
+        if (!children[0]) return res.status(404).json({ success: false, message: 'No children linked to this account' });
+        studentId = children[0].id;
+      }
     }
     if (!studentId) {
       return res.status(400).json({ success: false, message: 'student_id required' });
@@ -222,4 +239,38 @@ const getParentFeed = async (req, res) => {
   }
 };
 
-module.exports = { getParentFeed };
+/**
+ * GET /api/parent-feed/children
+ * Returns all children linked to the calling parent account.
+ */
+const getMyChildren = async (req, res) => {
+  try {
+    let parentUserId;
+    if (req.user.role === 'parent') {
+      parentUserId = req.user.id;
+    } else if (req.user.role === 'admin') {
+      // admin can view children of any parent: ?parent_user_id=X
+      parentUserId = req.query.parent_user_id ? parseInt(req.query.parent_user_id) : null;
+      if (!parentUserId) return res.status(400).json({ success: false, message: 'parent_user_id required' });
+    } else {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
+    const { rows } = await pool.query(
+      `SELECT s.id, s.full_name, s.full_name_urdu, s.roll_number, s.admission_number,
+              s.grade, s.section, s.gender, s.photo_url, s.status,
+              c.name AS class_name, c.section AS class_section
+       FROM students s
+       LEFT JOIN classes c ON c.id = s.class_id
+       WHERE s.parent_user_id = $1 AND s.deleted_at IS NULL
+       ORDER BY s.created_at ASC`,
+      [parentUserId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('[PARENT_FEED] getMyChildren:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to load children' });
+  }
+};
+
+module.exports = { getParentFeed, getMyChildren };

@@ -1,9 +1,12 @@
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const db = require('../db');
 
 const BACKUP_DIR = process.env.BACKUP_DIR || path.join(__dirname, '../../../backups');
+
+// Only allow safe schema names — prevents path traversal and shell injection
+const SAFE_SCHEMA_RE = /^[a-zA-Z0-9_-]+$/;
 
 function ensureBackupDir() {
   if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
@@ -14,6 +17,8 @@ function timestamp() {
 }
 
 async function createBackup(schema = 'public') {
+  if (!SAFE_SCHEMA_RE.test(schema)) throw new Error('Invalid schema name');
+
   ensureBackupDir();
   const filename = `backup_${schema}_${timestamp()}.sql`;
   const filepath = path.join(BACKUP_DIR, filename);
@@ -22,8 +27,8 @@ async function createBackup(schema = 'public') {
   if (!url) throw new Error('DATABASE_URL not configured');
 
   return new Promise((resolve, reject) => {
-    const cmd = `pg_dump "${url}" --schema="${schema}" -f "${filepath}"`;
-    exec(cmd, (err, stdout, stderr) => {
+    // execFile avoids shell interpolation — args are passed directly to pg_dump
+    execFile('pg_dump', [url, `--schema=${schema}`, '-f', filepath], (err, _stdout, stderr) => {
       if (err) {
         console.error('[Backup] pg_dump failed:', stderr);
         return reject(new Error(stderr || err.message));

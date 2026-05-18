@@ -21,17 +21,25 @@ const getSettings = async (req, res) => {
   } catch (err) { serverErr(res, err); }
 };
 
+const KEY_VALIDATORS = {
+  ntn:         { re: /^\d{7}-\d$/, label: 'NTN must be 7 digits, dash, check digit (e.g. 1234567-8)' },
+  school_code: { re: /^[A-Za-z0-9_-]{2,20}$/, label: 'School code must be 2–20 alphanumeric/dash/underscore chars' },
+};
+
 const upsertSettings = async (req, res) => {
   try {
     const entries = Object.entries(req.body);
     if (!entries.length) return res.status(400).json({ success: false, message: 'No settings provided' });
     for (const [key, value] of entries) {
+      const validator = KEY_VALIDATORS[key];
+      if (validator && value && !validator.re.test(value))
+        return res.status(400).json({ success: false, message: validator.label });
       await pool.query(`
         INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW())
         ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()
       `, [key, value ?? null]);
     }
-    await cache.del(SETTINGS_CACHE_KEY); // Invalidate cache on update
+    await cache.del(SETTINGS_CACHE_KEY);
     res.json({ success: true, message: 'Settings saved' });
   } catch (err) { serverErr(res, err); }
 };

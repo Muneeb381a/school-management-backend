@@ -71,15 +71,30 @@ const getSummary = async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
-        COUNT(*)                                          AS total_items,
-        COALESCE(SUM(quantity),0)                         AS total_units,
-        COALESCE(SUM(purchase_price * quantity),0)        AS total_value,
-        COUNT(*) FILTER (WHERE condition='damaged')       AS damaged_count,
-        COUNT(*) FILTER (WHERE condition='lost')          AS lost_count,
-        COUNT(*) FILTER (WHERE quantity = 0)              AS out_of_stock
+        COUNT(*)                                                              AS total_items,
+        COALESCE(SUM(quantity),0)                                             AS total_units,
+        COALESCE(SUM(purchase_price * quantity),0)                            AS total_value,
+        COUNT(*) FILTER (WHERE condition='damaged')                            AS damaged_count,
+        COUNT(*) FILTER (WHERE condition='lost')                               AS lost_count,
+        COUNT(*) FILTER (WHERE quantity = 0)                                   AS out_of_stock,
+        COUNT(*) FILTER (WHERE min_quantity > 0 AND quantity <= min_quantity)  AS low_stock_count
       FROM inventory_items
     `);
     res.json({ success: true, data: rows[0] });
+  } catch (err) { serverErr(res, err); }
+};
+
+// ── GET /api/inventory/low-stock ──────────────────────────────────────────────
+// Returns items at or below their min_quantity threshold (excluding fully out-of-stock).
+const getLowStock = async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT id, name, category, quantity, min_quantity, unit, location, supplier
+      FROM inventory_items
+      WHERE min_quantity > 0 AND quantity <= min_quantity
+      ORDER BY (quantity::float / NULLIF(min_quantity, 0)) ASC, name
+    `);
+    res.json({ success: true, data: rows, total: rows.length });
   } catch (err) { serverErr(res, err); }
 };
 
@@ -195,6 +210,6 @@ const exportInventory = async (req, res, next) => {
 };
 
 module.exports = {
-  getItems, getItem, createItem, updateItem, deleteItem, getSummary,
+  getItems, getItem, createItem, updateItem, deleteItem, getSummary, getLowStock,
   getImportTemplate, importInventory, exportInventory,
 };

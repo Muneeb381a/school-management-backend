@@ -11,6 +11,7 @@ const { serverErr }      = require('../utils/serverErr');
 const { genTempPassword } = require('../utils/genTempPassword');
 const { fireWebhooks }    = require('../utils/webhookDispatcher');
 const { logLifecycleEvent, logLifecycleBatch } = require('../services/lifecycleService');
+const { streamTcPdf, streamAdmissionLetterPdf } = require('../utils/certificatePdf');
 
 const ALL_FIELDS = [
   'class_id',
@@ -50,6 +51,64 @@ function buildUsername(fullName, id) {
   return `stu_${clean}${id}`;
 }
 
+function buildParentUsername(fatherName, studentId) {
+  const clean = (fatherName || 'parent').toLowerCase().replace(/[^a-z]/g, '').slice(0, 6).padEnd(3, 'x');
+  return `par_${clean}${studentId}`;
+}
+
+/**
+ * Find an existing parent user by father_cnic or father_email (sibling matching),
+ * or create a new one. Returns { parentUserId, isNew, username, rawPw }.
+ * rawPw is only set when isNew === true.
+ */
+async function findOrCreateParentUser(client, student) {
+  // 1. Try to find existing parent via sibling with same father_cnic
+  if (student.father_cnic) {
+    const { rows } = await client.query(
+      `SELECT s.parent_user_id FROM students s
+       WHERE s.father_cnic = $1 AND s.parent_user_id IS NOT NULL AND s.deleted_at IS NULL
+       LIMIT 1`,
+      [student.father_cnic]
+    );
+    if (rows[0]?.parent_user_id) {
+      return { parentUserId: rows[0].parent_user_id, isNew: false, username: null, rawPw: null };
+    }
+  }
+
+  // 2. Try to find by father_email
+  if (student.father_email) {
+    const { rows } = await client.query(
+      `SELECT s.parent_user_id FROM students s
+       WHERE s.father_email = $1 AND s.parent_user_id IS NOT NULL AND s.deleted_at IS NULL
+       LIMIT 1`,
+      [student.father_email]
+    );
+    if (rows[0]?.parent_user_id) {
+      return { parentUserId: rows[0].parent_user_id, isNew: false, username: null, rawPw: null };
+    }
+  }
+
+  // 3. No existing parent — create new
+  const username = buildParentUsername(student.father_name, student.id);
+  const rawPw    = genTempPassword();
+  const hashed   = await bcrypt.hash(rawPw, 10);
+  const { rows } = await client.query(
+    `INSERT INTO users (username, password, role, name, entity_id, must_change_password)
+     VALUES ($1, $2, 'parent', $3, $4, TRUE)
+     ON CONFLICT (username) DO NOTHING
+     RETURNING id`,
+    [username, hashed, student.father_name || `${student.full_name}'s Parent`, student.id]
+  );
+  // Conflict fallback: shouldn't happen but guard anyway
+  if (!rows[0]) {
+    const { rows: existing } = await client.query(
+      `SELECT id FROM users WHERE username = $1`, [username]
+    );
+    return { parentUserId: existing[0]?.id || null, isNew: false, username, rawPw: null };
+  }
+  return { parentUserId: rows[0].id, isNew: true, username, rawPw };
+}
+
 const getAllStudents = async (req, res, next) => {
   try {
     const { search, grade, status, class_id } = req.query;
@@ -61,7 +120,7 @@ const getAllStudents = async (req, res, next) => {
     if (search) {
       params.push(`%${search}%`);
       const p = params.length;
-      where += ` AND (s.full_name ILIKE $${p} OR s.email ILIKE $${p} OR s.b_form_no ILIKE $${p})`;
+      where += ` AND (s.full_name ILIKE $${p} OR s.full_name_urdu ILIKE $${p} OR s.email ILIKE $${p} OR s.b_form_no ILIKE $${p})`;
     }
     if (grade)    { params.push(grade);    where += ` AND s.grade = $${params.length}`; }
     if (status)   { params.push(status);   where += ` AND s.status = $${params.length}`; }
@@ -149,10 +208,20 @@ const createStudent = async (req, res, next) => {
        ON CONFLICT (username) DO NOTHING`,
       [username, hashed, student.full_name, student.id]
     );
+
+    // ── Parent account: find existing (sibling) or create new ────────────
+    const parentResult = await findOrCreateParentUser(client, student);
+    if (parentResult.parentUserId) {
+      await client.query(
+        'UPDATE students SET parent_user_id=$1 WHERE id=$2',
+        [parentResult.parentUserId, student.id]
+      );
+    }
+
     await client.query('COMMIT');
     invalidateDashboard().catch(() => {});
 
-    // Try to email credentials — prefer student email, fall back to father email
+    // Try to email student credentials
     const emailTo = student.email || student.father_email || null;
     let emailSent = false;
     if (emailTo) {
@@ -170,6 +239,27 @@ const createStudent = async (req, res, next) => {
         });
         emailSent = true;
       } catch { /* email failure is non-blocking */ }
+    }
+
+    // Email parent credentials if new parent account was created
+    if (parentResult.isNew && parentResult.rawPw) {
+      const parentEmail = student.father_email || student.email || null;
+      if (parentEmail) {
+        try {
+          await sendMail({
+            to:      parentEmail,
+            subject: 'Parent Portal Login Credentials',
+            html:    `<p>Dear ${student.father_name || 'Parent'},</p>
+                      <p>A parent portal account has been created for you:</p>
+                      <ul>
+                        <li><strong>Username:</strong> ${parentResult.username}</li>
+                        <li><strong>Temporary Password:</strong> ${parentResult.rawPw}</li>
+                      </ul>
+                      <p>You can view attendance, homework, fees and more for your child <strong>${student.full_name}</strong>.</p>
+                      <p>Please log in and change your password immediately.</p>`,
+          });
+        } catch { /* non-blocking */ }
+      }
     }
 
     fireWebhooks('student.enrolled', {
@@ -190,12 +280,19 @@ const createStudent = async (req, res, next) => {
       performedBy: req.user.id,
     }).catch(() => {});
 
+    const parentCredentials = parentResult.isNew && parentResult.rawPw
+      ? { username: parentResult.username, tempPassword: parentResult.rawPw, isNew: true }
+      : parentResult.parentUserId
+        ? { isNew: false, note: 'Linked to existing parent account (sibling detected)' }
+        : null;
+
     res.status(201).json({
       success:     true,
       data:        student,
       credentials: emailSent
         ? { username, emailSent: true, note: `Credentials emailed to ${emailTo}` }
         : { username, tempPassword: rawPw, note: 'No email on file — share this password with the student directly. It will not be shown again.' },
+      parent_credentials: parentCredentials,
       message:     'Student enrolled successfully.',
     });
   } catch (err) {
@@ -276,6 +373,7 @@ const restoreStudent = async (req, res, next) => {
 
 const promoteStudents = async (req, res, next) => {
   const { from_class_id, to_class_id, student_ids } = req.body;
+  const dry_run = req.query.dry_run === 'true';
   if (!from_class_id || !to_class_id)
     return next(new AppError('from_class_id and to_class_id are required.', 400));
   if (String(from_class_id) === String(to_class_id))
@@ -284,6 +382,27 @@ const promoteStudents = async (req, res, next) => {
     const { rows: clsRows } = await pool.query('SELECT grade, section FROM classes WHERE id = $1', [to_class_id]);
     if (!clsRows[0]) throw new AppError('Destination class not found.', 404);
     const { grade, section } = clsRows[0];
+
+    if (dry_run) {
+      let selectQuery, selectParams;
+      if (Array.isArray(student_ids) && student_ids.length > 0) {
+        selectQuery  = `SELECT id, full_name, grade AS current_grade, section AS current_section FROM students WHERE id = ANY($1::int[]) AND class_id = $2 AND deleted_at IS NULL`;
+        selectParams = [student_ids, from_class_id];
+      } else {
+        selectQuery  = `SELECT id, full_name, grade AS current_grade, section AS current_section FROM students WHERE class_id = $1 AND status = 'active' AND deleted_at IS NULL`;
+        selectParams = [from_class_id];
+      }
+      const { rows: preview } = await pool.query(selectQuery, selectParams);
+      return res.json({
+        success: true,
+        dry_run: true,
+        would_promote: preview.length,
+        to_grade: grade,
+        to_section: section,
+        students: preview,
+      });
+    }
+
     let query, params;
     if (Array.isArray(student_ids) && student_ids.length > 0) {
       query  = `UPDATE students SET class_id=$1, grade=$2, section=$3 WHERE id = ANY($4::int[]) AND class_id = $5 RETURNING id`;
@@ -497,6 +616,9 @@ const importStudents = async (req, res, next) => {
           ]
         );
         const student  = ins[0];
+        // Merge CSV data back onto student for parent lookup (father_cnic / father_email)
+        const studentFull = { ...student, father_name: data.father_name || null, father_cnic: data.father_cnic || null, father_email: data.father_email || null };
+
         const username = buildUsername(student.full_name, student.id);
         const rawPw    = genTempPassword();
         const hashed   = await bcrypt.hash(rawPw, 10);
@@ -505,6 +627,10 @@ const importStudents = async (req, res, next) => {
            VALUES ($1,$2,'student',$3,$4) ON CONFLICT (username) DO NOTHING`,
           [username, hashed, student.full_name, student.id]
         );
+        const parentResult = await findOrCreateParentUser(client, studentFull);
+        if (parentResult.parentUserId) {
+          await client.query('UPDATE students SET parent_user_id=$1 WHERE id=$2', [parentResult.parentUserId, student.id]);
+        }
         await client.query('COMMIT');
         imported++;
       } catch (err) {
@@ -608,11 +734,187 @@ const getStudentCredentials = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// ── GET /api/students/:id/parent-credentials ─────────────────────────────────
+const getParentCredentials = async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.username, u.must_change_password, u.is_active,
+              s.parent_user_id,
+              (SELECT COUNT(*) FROM students s2
+               WHERE s2.parent_user_id = u.id AND s2.deleted_at IS NULL) AS children_count
+       FROM students s
+       LEFT JOIN users u ON u.id = s.parent_user_id
+       WHERE s.id = $1 AND s.deleted_at IS NULL`,
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ success: false, message: 'Student not found' });
+    res.json({ success: true, data: rows[0].parent_user_id ? rows[0] : null });
+  } catch (err) { next(err); }
+};
+
+// ── POST /api/students/:id/reset-parent-credentials ──────────────────────────
+const resetParentCredentials = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Get student + current parent
+    const { rows: sRows } = await client.query(
+      `SELECT s.*, u.id AS parent_user_id_val, u.username AS parent_username
+       FROM students s
+       LEFT JOIN users u ON u.id = s.parent_user_id
+       WHERE s.id = $1 AND s.deleted_at IS NULL`,
+      [req.params.id]
+    );
+    if (!sRows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ success: false, message: 'Student not found' }); }
+    const student = sRows[0];
+
+    let parentUserId = student.parent_user_id;
+    let username     = student.parent_username;
+    let isNew        = false;
+
+    const rawPw  = genTempPassword();
+    const hashed = await bcrypt.hash(rawPw, 10);
+
+    if (parentUserId) {
+      // Reset existing parent password
+      await client.query(
+        `UPDATE users SET password=$1, must_change_password=TRUE WHERE id=$2`,
+        [hashed, parentUserId]
+      );
+    } else {
+      // Create parent account for the first time
+      username = buildParentUsername(student.father_name, student.id);
+      const { rows: uRows } = await client.query(
+        `INSERT INTO users (username, password, role, name, entity_id, must_change_password)
+         VALUES ($1,$2,'parent',$3,$4,TRUE) ON CONFLICT (username) DO UPDATE SET password=$2, must_change_password=TRUE
+         RETURNING id`,
+        [username, hashed, student.father_name || `${student.full_name}'s Parent`, student.id]
+      );
+      parentUserId = uRows[0].id;
+      await client.query('UPDATE students SET parent_user_id=$1 WHERE id=$2', [parentUserId, student.id]);
+      isNew = true;
+    }
+
+    await client.query('COMMIT');
+
+    const emailTo = student.father_email || student.email || null;
+    let emailSent = false;
+    if (emailTo) {
+      try {
+        await sendMail({
+          to:      emailTo,
+          subject: isNew ? 'Parent Portal Login Credentials' : 'Parent Portal Password Reset',
+          html:    `<p>Dear ${student.father_name || 'Parent'},</p>
+                    <p>Your parent portal ${isNew ? 'account has been created' : 'password has been reset'}:</p>
+                    <ul>
+                      <li><strong>Username:</strong> ${username}</li>
+                      <li><strong>Temporary Password:</strong> ${rawPw}</li>
+                    </ul>
+                    <p>Please log in and change your password immediately.</p>`,
+        });
+        emailSent = true;
+      } catch { /* non-blocking */ }
+    }
+
+    res.json({
+      success:     true,
+      credentials: emailSent
+        ? { username, emailSent: true }
+        : { username, tempPassword: rawPw, note: 'Share directly — shown only once.' },
+      isNew,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally { client.release(); }
+};
+
+// ── Shared helper: fetch student + settings for certificate generation ────────
+async function _fetchStudentForCert(studentId) {
+  const [stuRes, settingsRes, feeRes] = await Promise.all([
+    pool.query(
+      `SELECT s.*,
+              c.name AS class_name, c.section, c.grade
+       FROM students s
+       LEFT JOIN classes c ON c.id = s.class_id
+       WHERE s.id = $1 AND s.deleted_at IS NULL`,
+      [studentId]
+    ),
+    pool.query(
+      `SELECT key, value FROM settings
+       WHERE key IN (
+         'school_name','school_address','school_phone','school_email',
+         'principal_name','medium_of_instruction'
+       )`
+    ),
+    pool.query(
+      `SELECT COALESCE(SUM(fi.total_amount + fi.fine_amount - fi.discount_amount - fi.paid_amount), 0) AS outstanding
+       FROM fee_invoices fi
+       WHERE fi.student_id = $1 AND fi.status NOT IN ('paid','cancelled')`,
+      [studentId]
+    ),
+  ]);
+
+  const student = stuRes.rows[0];
+  if (!student) return null;
+
+  const settings = {};
+  settingsRes.rows.forEach(r => { settings[r.key] = r.value; });
+
+  student.outstanding_fee = feeRes.rows[0]?.outstanding || 0;
+  return { student, settings };
+}
+
+// ── GET /api/students/:id/tc/pdf ──────────────────────────────────────────────
+const getTcPdf = async (req, res) => {
+  try {
+    const result = await _fetchStudentForCert(req.params.id);
+    if (!result) return res.status(404).json({ success: false, message: 'Student not found' });
+
+    const { student, settings } = result;
+    const ym     = new Date().toISOString().slice(0, 7).replace('-', '');
+    const certNo = `TC-${ym}-${String(student.id).padStart(5, '0')}`;
+    const now    = new Date();
+
+    // Log the issuance (idempotent on cert_no conflict)
+    await pool.query(
+      `INSERT INTO student_certificate_log (student_id, cert_type, cert_no, issued_by)
+       VALUES ($1,'tc',$2,$3) ON CONFLICT (cert_no) DO NOTHING`,
+      [student.id, certNo, req.user?.id || null]
+    );
+
+    streamTcPdf(res, { student, settings, certNo, issuedAt: now });
+  } catch (err) { serverErr(res, err); }
+};
+
+// ── GET /api/students/:id/admission-letter/pdf ────────────────────────────────
+const getAdmissionLetterPdf = async (req, res) => {
+  try {
+    const result = await _fetchStudentForCert(req.params.id);
+    if (!result) return res.status(404).json({ success: false, message: 'Student not found' });
+
+    const { student, settings } = result;
+    const ym     = new Date().toISOString().slice(0, 7).replace('-', '');
+    const certNo = `AL-${ym}-${String(student.id).padStart(5, '0')}`;
+    const now    = new Date();
+
+    await pool.query(
+      `INSERT INTO student_certificate_log (student_id, cert_type, cert_no, issued_by)
+       VALUES ($1,'admission_letter',$2,$3) ON CONFLICT (cert_no) DO NOTHING`,
+      [student.id, certNo, req.user?.id || null]
+    );
+
+    streamAdmissionLetterPdf(res, { student, settings, certNo, issuedAt: now });
+  } catch (err) { serverErr(res, err); }
+};
+
 module.exports = {
   getAllStudents, getStudentById, createStudent, updateStudent, deleteStudent,
   getDeletedStudents, restoreStudent,
   promoteStudents,
   uploadPhoto, listDocuments, uploadDocument, deleteDocument, resetCredentials,
   getImportTemplate, importStudents, exportStudents,
-  getStudentCredentials,
+  getStudentCredentials, getParentCredentials, resetParentCredentials,
+  getTcPdf, getAdmissionLetterPdf,
 };

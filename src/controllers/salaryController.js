@@ -3,6 +3,18 @@ const { buildWorkbook, sendWorkbook } = require('../utils/excelExport');
 const { serverErr }      = require('../utils/serverErr');
 const { fireWebhooks }   = require('../utils/webhookDispatcher');
 
+// ── FBR 2024-25 salaried income tax (progressive slabs) ──────────────────────
+// Source: Finance Act 2024, Schedule 1, Part I (Division I – Salary)
+function calculateFbrTax(annualSalary) {
+  const s = parseFloat(annualSalary) || 0;
+  if (s <= 600_000)   return 0;
+  if (s <= 1_200_000) return (s - 600_000) * 0.05;
+  if (s <= 2_400_000) return 30_000  + (s - 1_200_000) * 0.15;
+  if (s <= 3_600_000) return 210_000 + (s - 2_400_000) * 0.25;
+  if (s <= 6_000_000) return 510_000 + (s - 3_600_000) * 0.30;
+  return                     1_230_000 + (s - 6_000_000) * 0.35;
+}
+
 
 // ── Salary Structures ────────────────────────────────────────
 
@@ -119,6 +131,17 @@ const generateMonthlySalaries = async (req, res) => {
     const attMap = {};
     attRows.forEach(r => { attMap[r.teacher_id] = { absent_days: r.absent_days, late_days: r.late_days }; });
 
+    // Load approved advances with remaining balance for deduction this month
+    const { rows: advRows } = await pool.query(
+      `SELECT teacher_id, SUM(monthly_deduction) AS advance_deduction
+       FROM salary_advances
+       WHERE status = 'approved' AND monthly_deduction > 0
+         AND total_repaid < amount
+       GROUP BY teacher_id`
+    );
+    const advMap = {};
+    advRows.forEach(r => { advMap[r.teacher_id] = parseFloat(r.advance_deduction); });
+
     // Build arrays for batch UNNEST insert (1 round-trip instead of N)
     const cols = {
       teacherIds: [], months: [],
@@ -135,8 +158,11 @@ const generateMonthlySalaries = async (req, res) => {
       const trns  = parseFloat(t.transport_allowance || 0);
       const other = parseFloat(t.other_allowance     || 0);
       const gross = base + house + med + trns + other;
-      const tax   = parseFloat(t.income_tax          || 0);
-      const otDed = parseFloat(t.other_deduction     || 0);
+      // If income_tax is 0 (not set), auto-calculate from FBR 2024-25 slabs
+      const storedTax = parseFloat(t.income_tax || 0);
+      const tax   = storedTax > 0 ? storedTax : parseFloat((calculateFbrTax(gross * 12) / 12).toFixed(2));
+      const otDed   = parseFloat(t.other_deduction || 0);
+      const advDedM = parseFloat(advMap[t.id]     || 0); // salary advance monthly instalment
 
       const att        = attMap[t.id] || { absent_days: 0, late_days: 0 };
       const absentDays = att.absent_days;
@@ -150,7 +176,7 @@ const generateMonthlySalaries = async (req, res) => {
       const attDed   = parseFloat((leaveDed + lateDed).toFixed(2));
       const lateDedR = parseFloat(lateDed.toFixed(2));
 
-      const totalDed = parseFloat((tax + otDed + attDed).toFixed(2));
+      const totalDed = parseFloat((tax + otDed + attDed + advDedM).toFixed(2));
       const net      = parseFloat((gross - totalDed).toFixed(2));
 
       cols.teacherIds.push(t.id);
@@ -421,9 +447,109 @@ const updateSalaryPolicy = async (req, res) => {
   } catch (err) { serverErr(res, err); }
 };
 
+// ── Salary Advance endpoints ──────────────────────────────────────────────────
+
+// GET /api/salary/advances
+const listAdvances = async (req, res) => {
+  try {
+    const { teacher_id, status } = req.query;
+    const p = []; let q = `
+      SELECT sa.*, t.full_name AS teacher_name
+      FROM salary_advances sa JOIN teachers t ON t.id = sa.teacher_id WHERE 1=1`;
+    if (teacher_id) { p.push(teacher_id); q += ` AND sa.teacher_id=$${p.length}`; }
+    if (status)     { p.push(status);     q += ` AND sa.status=$${p.length}`; }
+    q += ' ORDER BY sa.requested_at DESC';
+    const { rows } = await pool.query(q, p);
+    res.json({ success: true, data: rows });
+  } catch (err) { serverErr(res, err); }
+};
+
+// POST /api/salary/advances — teacher or admin requests an advance
+const requestAdvance = async (req, res) => {
+  try {
+    const { teacher_id, amount, reason, monthly_deduction } = req.body;
+    if (!teacher_id || !amount || !monthly_deduction) {
+      return res.status(400).json({ success: false, message: 'teacher_id, amount, monthly_deduction required' });
+    }
+    const { rows } = await pool.query(
+      `INSERT INTO salary_advances (teacher_id, amount, reason, monthly_deduction)
+       VALUES ($1,$2,$3,$4) RETURNING *`,
+      [teacher_id, amount, reason || null, monthly_deduction]
+    );
+    res.status(201).json({ success: true, data: rows[0] });
+  } catch (err) { serverErr(res, err); }
+};
+
+// PATCH /api/salary/advances/:id/approve
+const approveAdvance = async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE salary_advances
+       SET status='approved', approved_by=$1, approved_at=NOW(), notes=$2
+       WHERE id=$3 AND status='pending' RETURNING *`,
+      [req.user.id, req.body.notes || null, req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ success: false, message: 'Pending advance not found' });
+    res.json({ success: true, data: rows[0] });
+  } catch (err) { serverErr(res, err); }
+};
+
+// PATCH /api/salary/advances/:id/reject
+const rejectAdvance = async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE salary_advances
+       SET status='rejected', approved_by=$1, approved_at=NOW(), notes=$2
+       WHERE id=$3 AND status='pending' RETURNING *`,
+      [req.user.id, req.body.notes || null, req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ success: false, message: 'Pending advance not found' });
+    res.json({ success: true, data: rows[0] });
+  } catch (err) { serverErr(res, err); }
+};
+
+// ── GET /api/salary/tax-preview?monthly_gross=X ───────────────────────────────
+// Returns FBR 2024-25 tax breakdown for a given monthly gross salary.
+const getTaxPreview = (req, res) => {
+  const monthly = parseFloat(req.query.monthly_gross);
+  if (!monthly || monthly < 0) {
+    return res.status(400).json({ success: false, message: 'monthly_gross is required and must be positive' });
+  }
+  const annual     = monthly * 12;
+  const annualTax  = calculateFbrTax(annual);
+  const monthlyTax = parseFloat((annualTax / 12).toFixed(2));
+  const net        = parseFloat((monthly - monthlyTax).toFixed(2));
+
+  // Build slab breakdown
+  const slabs = [
+    { range: '0 – 600,000',         rate: '0%',   tax: Math.min(Math.max(0, annualTax - 0), 0) },
+    { range: '600,001 – 1,200,000', rate: '5%',   tax: annual > 600_000   ? Math.min((annual - 600_000) * 0.05,   30_000)  : 0 },
+    { range: '1,200,001 – 2,400,000', rate: '15%', tax: annual > 1_200_000 ? Math.min((annual - 1_200_000) * 0.15, 180_000) : 0 },
+    { range: '2,400,001 – 3,600,000', rate: '25%', tax: annual > 2_400_000 ? Math.min((annual - 2_400_000) * 0.25, 300_000) : 0 },
+    { range: '3,600,001 – 6,000,000', rate: '30%', tax: annual > 3_600_000 ? Math.min((annual - 3_600_000) * 0.30, 720_000) : 0 },
+    { range: 'Above 6,000,000',       rate: '35%', tax: annual > 6_000_000 ? (annual - 6_000_000) * 0.35 : 0 },
+  ].filter(s => s.tax > 0);
+
+  res.json({
+    success: true,
+    data: {
+      monthly_gross:       monthly,
+      annual_gross:        annual,
+      annual_tax_fbr:      annualTax,
+      monthly_tax_fbr:     monthlyTax,
+      monthly_net:         net,
+      effective_rate_pct:  annual > 0 ? parseFloat(((annualTax / annual) * 100).toFixed(2)) : 0,
+      slab_breakdown:      slabs,
+      note:                'FBR Finance Act 2024-25 — Salaried persons tax slabs',
+    },
+  });
+};
+
 module.exports = {
   getSalaryStructures, getTeacherSalaryStructure, upsertSalaryStructure,
   getSalaryPayments, generateMonthlySalaries, updateSalaryPayment, markSalaryPaid, getSalarySlip,
   bulkMarkSalaryPaid, exportSalary, getMySlips,
   getSalaryPolicy, updateSalaryPolicy,
+  getTaxPreview,
+  listAdvances, requestAdvance, approveAdvance, rejectAdvance,
 };

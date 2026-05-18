@@ -75,4 +75,13 @@ router.get('/students/:studentId/transfer-history', requireRole('admin','teacher
 // ── PDF transport slip ────────────────────────────────────────────────────────
 router.get('/assignments/:id/pdf', requireRole('admin','teacher'), asyncHandler(transport.generatePdf));
 
+// ── Trip sessions ─────────────────────────────────────────────────────────────
+router.get ('/trips',          requireRole('admin','teacher'), asyncHandler(transport.listTrips));
+router.post('/trips/start',    requireRole('admin','teacher'), asyncHandler(transport.startTrip));
+router.post('/trips/:id/end',  requireRole('admin','teacher'), asyncHandler(transport.endTrip));
+
+// ── Trip events (student pick/drop, speed alerts, etc.) ───────────────────────
+router.get ('/trips/:id/events', requireRole('admin','teacher'), asyncHandler(transport.getTripEvents));
+router.post('/trips/:id/events', requireRole('admin','teacher'), asyncHandler(transport.logTripEvent));
+
 module.exports = router;

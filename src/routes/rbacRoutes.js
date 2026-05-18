@@ -13,6 +13,8 @@ const {
   getUserPermissions,
   setUserPermissions,
   getSummary,
+  createUser,
+  deactivateUser,
 } = require('../controllers/rbacController');
 
 const router = Router();
@@ -32,10 +34,12 @@ router.delete('/roles/:id',       deleteRole);
 router.put('/roles/:id/permissions', setRolePermissions);
 
 // ── Users ─────────────────────────────────────────────────────────────────────
-router.get('/users',                          listUsers);
-router.put('/users/:userId/role',             setUserRole);
-router.get('/users/:userId/permissions',      getUserPermissions);
-router.put('/users/:userId/permissions',      setUserPermissions);
+router.get   ('/users',                       listUsers);
+router.post  ('/users',                       createUser);
+router.put   ('/users/:userId/role',          setUserRole);
+router.delete('/users/:userId',               deactivateUser);
+router.get   ('/users/:userId/permissions',   getUserPermissions);
+router.put   ('/users/:userId/permissions',   setUserPermissions);
 
 // ── Summary dashboard ─────────────────────────────────────────────────────────
 router.get('/summary', getSummary);

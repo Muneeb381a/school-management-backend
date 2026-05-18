@@ -13,7 +13,14 @@
  */
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PHONE_RE = /^[+\d\s\-().]{7,20}$/;
+
+// Pakistani mobile: 03XX-XXXXXXX | 03XXXXXXXXX | +923XXXXXXXXX | 00923XXXXXXXXX
+const PK_PHONE_RE = /^(\+92|0092|0)3[0-9]{9}$/;
+// Generic international fallback (kept for non-PK numbers)
+const PHONE_RE    = /^[+\d\s\-().]{7,20}$/;
+
+// NADRA CNIC / B-Form format: XXXXX-XXXXXXX-X
+const CNIC_RE = /^\d{5}-\d{7}-\d{1}$/;
 
 /**
  * @param {Array<{
@@ -64,6 +71,17 @@ function validate(rules) {
         case 'phone':
           if (!PHONE_RE.test(val))
             errors.push(`${name} must be a valid phone number.`);
+          break;
+
+        case 'pk_phone':
+          // Strip spaces/dashes for normalization before check
+          if (!PK_PHONE_RE.test(val.replace(/[\s\-]/g, '')))
+            errors.push(`${name} must be a valid Pakistani mobile number (e.g. 03001234567).`);
+          break;
+
+        case 'cnic':
+          if (!CNIC_RE.test(val))
+            errors.push(`${name} must be in NADRA format: XXXXX-XXXXXXX-X.`);
           break;
 
         case 'string':
@@ -164,18 +182,22 @@ const changePasswordValidator = validate([
 ]);
 
 const createStudentValidator = validate([
-  { field: 'full_name',     required: true,  type: 'string',  min: 2,  max: 200,  label: 'Full name' },
+  { field: 'full_name',     required: true,  type: 'string',   min: 2,  max: 200, label: 'Full name' },
   { field: 'email',         required: false, type: 'email',                        label: 'Email' },
-  { field: 'phone',         required: false, type: 'phone',                        label: 'Phone' },
-  { field: 'class_id',      required: false, type: 'integer', min: 1,              label: 'Class' },
+  { field: 'phone',         required: false, type: 'pk_phone',                     label: 'Phone' },
+  { field: 'father_phone',  required: false, type: 'pk_phone',                     label: 'Father phone' },
+  { field: 'class_id',      required: false, type: 'integer',  min: 1,             label: 'Class' },
   { field: 'date_of_birth', required: false, type: 'date',                         label: 'Date of birth' },
   { field: 'gender',        required: false, pattern: /^(Male|Female|Other)$/,     label: 'Gender' },
+  { field: 'cnic',          required: false, type: 'cnic',                         label: 'Student CNIC/B-Form' },
+  { field: 'father_cnic',   required: false, type: 'cnic',                         label: 'Father CNIC' },
 ]);
 
 const createTeacherValidator = validate([
-  { field: 'full_name', required: true,  type: 'string', min: 2,  max: 200, label: 'Full name' },
-  { field: 'email',     required: false, type: 'email',                      label: 'Email' },
-  { field: 'phone',     required: false, type: 'phone',                      label: 'Phone' },
+  { field: 'full_name', required: true,  type: 'string',   min: 2, max: 200, label: 'Full name' },
+  { field: 'email',     required: false, type: 'email',                       label: 'Email' },
+  { field: 'phone',     required: false, type: 'pk_phone',                    label: 'Phone' },
+  { field: 'cnic',      required: false, type: 'cnic',                        label: 'CNIC' },
 ]);
 
 // A7: financial amount validators
@@ -207,4 +229,7 @@ module.exports = {
   recordPaymentValidator,
   createExpenseValidator,
   createInvoiceValidator,
+  // Exported regex for reuse in controllers/services
+  PK_PHONE_RE,
+  CNIC_RE,
 };

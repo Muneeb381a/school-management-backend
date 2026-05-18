@@ -73,6 +73,29 @@ async function createIncident(req, res) {
      incident_type, severity, description, action_taken || null,
      parent_notified, follow_up_date || null]
   );
+
+  // Escalation: notify if unresolved incident count hits configured threshold
+  try {
+    const { rows: [{ cnt }] } = await db.query(
+      `SELECT COUNT(*) AS cnt FROM discipline_incidents WHERE student_id = $1 AND resolved = false`,
+      [student_id]
+    );
+    const { rows: tRows } = await db.query(
+      `SELECT value FROM settings WHERE key = 'discipline_escalation_threshold'`
+    );
+    const threshold = parseInt(tRows[0]?.value ?? '3', 10);
+    if (+cnt >= threshold) {
+      await db.query(
+        `INSERT INTO notifications (type, title, message, ref_key)
+         VALUES ('discipline_escalation', 'Discipline Escalation Alert', $1, $2)`,
+        [
+          `Student #${student_id} now has ${cnt} unresolved discipline incident(s) (threshold: ${threshold})`,
+          `discipline:student:${student_id}`,
+        ]
+      );
+    }
+  } catch (_) {}
+
   res.status(201).json({ success: true, data: row });
 }
 

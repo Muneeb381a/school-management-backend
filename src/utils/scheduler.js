@@ -14,6 +14,7 @@ const {
   runFeeReminders,
   runFeeDefaulterReport,
 } = require('../services/automationService');
+const { recalculateAll: recalculateRiskScores } = require('../services/riskEngine');
 
 const SIX_HOURS  = 6  * 60 * 60 * 1000;
 const ONE_DAY    = 24 * 60 * 60 * 1000;
@@ -81,6 +82,15 @@ async function weeklyDefaulterReport() {
   } catch (err) { console.error('[scheduler] defaulterReport error:', err.message); }
 }
 
+/** Weekly risk score recalculation — runs every 24h; only calculates on Sunday */
+async function weeklyRiskRecalculation() {
+  try {
+    if (new Date().getDay() !== 0) return; // 0 = Sunday
+    const result = await recalculateRiskScores();
+    console.log(`[scheduler] Risk scores recalculated: ${result?.updated ?? 0} student(s) updated.`);
+  } catch (err) { console.error('[scheduler] riskRecalculation error:', err.message); }
+}
+
 function startScheduler() {
   purgeExpiredTokens();
   purgeOldLoginAttempts();
@@ -108,6 +118,11 @@ function startScheduler() {
     weeklyDefaulterReport();
     setInterval(weeklyDefaulterReport, ONE_DAY);
   }, 150_000); // 2.5 min after boot
+
+  setTimeout(() => {
+    weeklyRiskRecalculation();
+    setInterval(weeklyRiskRecalculation, ONE_DAY);
+  }, 180_000); // 3 min after boot
 
   console.log('✅  Background scheduler started (token cleanup + smart automation).');
 }

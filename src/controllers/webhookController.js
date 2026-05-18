@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 const pool   = require('../db');
 const { serverErr } = require('../utils/serverErr');
-const { _dispatch } = require('../utils/webhookDispatcher');
+const { _dispatch, verifyInboundWebhook } = require('../utils/webhookDispatcher');
 
 const VALID_EVENTS = [
   'fee.paid', 'fee.partial',
@@ -122,4 +122,4 @@ const getWebhookLogs = async (req, res) => {
   } catch (err) { serverErr(res, err); }
 };
 
-module.exports = { getWebhooks, createWebhook, updateWebhook, deleteWebhook, testWebhook, getWebhookLogs, VALID_EVENTS };
+module.exports = { getWebhooks, createWebhook, updateWebhook, deleteWebhook, testWebhook, getWebhookLogs, VALID_EVENTS, verifyInboundWebhook };

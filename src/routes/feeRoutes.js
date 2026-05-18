@@ -9,10 +9,11 @@ const {
   getMonthlySummary, getOutstandingBalances, getStudentFeeHistory, exportCSV, getDashboardStats,
   getInvoicePrint, getReceiptPrint, getBulkPrintData, getByClassReport, getDailyReport,
   getConcessions, saveConcession, deleteConcession, applyLateFees,
-  getChallanPrint,
+  getChallanPrint, getChallanPdf, getReminderLog,
   getPaymentImportTemplate, importFeePayments, exportFeesExcel,
   sendFeeReminders,
   getSiblingGroups, getSiblingVoucher,
+  getClassFeeCollection,
 } = require('../controllers/feeController');
 
 const {
@@ -61,6 +62,7 @@ router.post('/invoices/generate-admission/:studentId', requireRole('admin'), gen
 router.post('/invoices/apply-late-fees',               requireRole('admin'), applyLateFees);
 router.get('/invoices/:id/print',                      requireRole('admin', 'teacher'), getInvoicePrint);
 router.get('/invoices/:id/challan',                    requireRole('admin', 'teacher'), getChallanPrint);
+router.get('/invoices/:id/challan/pdf',                requireRole('admin', 'teacher'), getChallanPdf);
 router.get('/invoices',                                requireRole('admin', 'teacher'), getInvoices);
 router.post('/invoices',                               requireRole('admin'), createInvoiceValidator, createInvoice);
 router.get('/invoices/:id',                            requireRole('admin', 'teacher'), getInvoice);
@@ -79,15 +81,17 @@ router.post('/payments',               requireRole('admin'), recordPaymentValida
 router.delete('/payments/:id',         requireRole('admin'),            voidPayment);
 
 // Reports
-router.get('/reports/monthly-summary', requireRole('admin', 'teacher'), getMonthlySummary);
-router.get('/reports/outstanding',     requireRole('admin', 'teacher'), getOutstandingBalances);
-router.get('/reports/by-class',        requireRole('admin', 'teacher'), getByClassReport);
-router.get('/reports/daily',           requireRole('admin', 'teacher'), getDailyReport);
-router.get('/reports/student/:id',     requireRole('admin', 'teacher'), getStudentFeeHistory);
+router.get('/reports/monthly-summary',    requireRole('admin', 'teacher'), getMonthlySummary);
+router.get('/reports/outstanding',        requireRole('admin', 'teacher'), getOutstandingBalances);
+router.get('/reports/by-class',           requireRole('admin', 'teacher'), getByClassReport);
+router.get('/reports/daily',              requireRole('admin', 'teacher'), getDailyReport);
+router.get('/reports/student/:id',        requireRole('admin', 'teacher'), getStudentFeeHistory);
+router.get('/reports/class-collection',   requireRole('admin', 'teacher'), getClassFeeCollection);
 router.get('/export',                  requireRole('admin'),            exportFeesExcel);
 
 // Fee reminders (email + SMS)
 router.post('/send-reminders',         requireRole('admin'),            sendFeeReminders);
+router.get ('/reminder-log',           requireRole('admin', 'teacher'), getReminderLog);
 
 // Sibling vouchers (read-only, no DB writes)
 router.get('/sibling-groups',  requireRole('admin', 'teacher'), getSiblingGroups);

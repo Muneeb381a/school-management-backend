@@ -7,7 +7,8 @@ const {
   promoteStudents,
   uploadPhoto, listDocuments, uploadDocument, deleteDocument, resetCredentials,
   getImportTemplate, importStudents, exportStudents,
-  getStudentCredentials,
+  getStudentCredentials, getParentCredentials, resetParentCredentials,
+  getTcPdf, getAdmissionLetterPdf,
 } = require('../controllers/studentController');
 
 const { photoUpload, docUpload, csvUpload } = require('../middleware/upload');
@@ -45,7 +46,11 @@ router.post('/:id/documents',          requireRole('admin'), docUpload.single('f
 router.delete('/:id/documents/:docId', requireRole('admin'),                              deleteDocument);
 
 // Credentials
-router.get('/:id/credentials',         requireRole('admin'), getStudentCredentials);
-router.post('/:id/reset-credentials',  requireRole('admin'), resetCredentials);
+router.get ('/:id/credentials',               requireRole('admin'), getStudentCredentials);
+router.post('/:id/reset-credentials',         requireRole('admin'), resetCredentials);
+router.get ('/:id/parent-credentials',        requireRole('admin'), getParentCredentials);
+router.post('/:id/reset-parent-credentials',  requireRole('admin'), resetParentCredentials);
+router.get ('/:id/tc/pdf',                    requireRole('admin', 'teacher'), getTcPdf);
+router.get ('/:id/admission-letter/pdf',      requireRole('admin', 'teacher'), getAdmissionLetterPdf);
 
 module.exports = router;

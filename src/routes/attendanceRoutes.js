@@ -14,11 +14,15 @@ const {
   getStudentHistory,
   getAttendanceRegister,
   getTeacherQuickList,
+  getAbsenceStreaks,
 } = require('../controllers/attendanceController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
 
 router.use(auditMiddleware('attendance'));
+
+// Consecutive absence streaks alert
+router.get('/absence-streaks',    requireRole('admin', 'teacher'), getAbsenceStreaks);
 
 // One-tap quick list for teacher portal
 router.get('/teacher-quick-list', requireRole('admin', 'teacher'), getTeacherQuickList);

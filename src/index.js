@@ -107,6 +107,7 @@ const chatRoutes               = require('./routes/chatRoutes');
 const chatbotRoutes            = require('./routes/chatbotRoutes');
 const rbacRoutes               = require('./routes/rbacRoutes');
 const lifecycleRoutes          = require('./routes/lifecycleRoutes');
+const onlinePaymentRoutes      = require('./routes/onlinePaymentRoutes');
 const { metricsMiddleware }   = require('./services/metricsService');
 
 const app = express();
@@ -137,21 +138,62 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 // ── 4. Security headers ───────────────────────────────────────────────────────
-app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+const isProd = process.env.NODE_ENV === 'production';
+app.use(helmet({
+  // CSP: API returns JSON; Swagger UI needs unsafe-inline for its own scripts/styles
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc:  ["'self'"],
+      scriptSrc:   ["'self'", "'unsafe-inline'"],
+      styleSrc:    ["'self'", "'unsafe-inline'"],
+      imgSrc:      ["'self'", 'data:', 'https:'],
+      connectSrc:  ["'self'"],
+      fontSrc:     ["'self'"],
+      objectSrc:   ["'none'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  // HSTS: force HTTPS in production for 1 year
+  strictTransportSecurity: isProd
+    ? { maxAge: 31_536_000, includeSubDomains: true, preload: true }
+    : false,
+  crossOriginEmbedderPolicy: false,
+  // These are on by default in Helmet but explicit for clarity:
+  xContentTypeOptions:    true,
+  xFrameOptions:          { action: 'deny' },
+  referrerPolicy:         { policy: 'strict-origin-when-cross-origin' },
+}));
 
 // ── 5. CORS ───────────────────────────────────────────────────────────────────
-const corsOptions = {
-  origin: [
+// Production origins come from CORS_ORIGINS env var (comma-separated).
+// Local network / Expo access is opt-in via CORS_ALLOW_LOCAL_NETWORK=true.
+function buildCorsOrigins() {
+  const envOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  const isProd = process.env.NODE_ENV === 'production';
+  const devOrigins = isProd ? [] : [
     'http://localhost:5173',
     'http://localhost:8081',
     'http://localhost:8082',
     'http://localhost:19006',
-    'https://studentmanagement-frontend-six.vercel.app',
-    'https://frontend-liart-five-45.vercel.app',
-    /^http:\/\/192\.168\./,
-    /^http:\/\/10\./,
-    /^exp:\/\//,
-  ],
+  ];
+
+  const origins = [...new Set([...envOrigins, ...devOrigins])];
+
+  if (!isProd) origins.push(/^exp:\/\//);
+
+  if (process.env.CORS_ALLOW_LOCAL_NETWORK === 'true') {
+    origins.push(/^https?:\/\/192\.168\./, /^https?:\/\/10\./);
+  }
+
+  return origins;
+}
+
+const corsOptions = {
+  origin: buildCorsOrigins(),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
@@ -179,7 +221,11 @@ app.set('io', io);
 setupSocketIO(io);
 
 // ── 6. Body parsers ───────────────────────────────────────────────────────────
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+  limit: '10mb',
+  // Capture raw buffer so inbound webhook signature verification can use it
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ── 7. Rate limiters ──────────────────────────────────────────────────────────
@@ -293,6 +339,8 @@ for (const prefix of ['/api', '/api/v1']) {
   app.use(`${prefix}/auth`, authRoutes);
   // School resolve is public — login page calls it before JWT exists
   app.use(`${prefix}/schools/resolve`, schoolRoutes);
+  // Payment gateway callbacks are public — JazzCash/EasyPaisa POST here (no JWT)
+  app.use(`${prefix}/online-payments`, onlinePaymentRoutes);
 }
 
 // ── 10. Global JWT guard ──────────────────────────────────────────────────────

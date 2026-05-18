@@ -6,6 +6,7 @@ const { parseCSV, validateRows, buildTemplate } = require('../utils/csvImport');
 const { buildWorkbook, sendWorkbook }           = require('../utils/excelExport');
 const { fireWebhooks }                          = require('../utils/webhookDispatcher');
 const { logLifecycleEvent }                     = require('../services/lifecycleService');
+const { streamChallanPdf }                      = require('../utils/challanPdf');
 
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -1520,6 +1521,88 @@ const getChallanPrint = async (req, res) => {
   } catch (err) { serverErr(res, err); }
 };
 
+// ═══════════════════════════════════════════════════════════════
+//  CHALLAN PDF  — GET /api/fees/invoices/:id/challan/pdf
+//  Streams a 3-copy (Bank / School / Student) A4 PDF challan.
+// ═══════════════════════════════════════════════════════════════
+const getChallanPdf = async (req, res) => {
+  try {
+    const { rows: invRows } = await pool.query(
+      `SELECT
+         fi.id, fi.invoice_no, fi.invoice_type, fi.billing_month,
+         fi.due_date, fi.total_amount, fi.paid_amount,
+         fi.discount_amount, fi.fine_amount,
+         fi.status, fi.notes, fi.academic_year,
+         fi.created_at AS issued_at,
+         (fi.total_amount + fi.fine_amount - fi.discount_amount)                  AS net_amount,
+         (fi.total_amount + fi.fine_amount - fi.discount_amount - fi.paid_amount) AS balance,
+         s.id           AS student_id,
+         s.full_name    AS student_name,
+         s.roll_number,
+         s.father_name,
+         s.father_phone,
+         s.phone        AS student_phone,
+         s.address      AS student_address,
+         c.name         AS class_name,
+         c.grade,
+         c.section
+       FROM fee_invoices fi
+       JOIN students s ON s.id = fi.student_id
+       LEFT JOIN classes c ON c.id = fi.class_id
+       WHERE fi.id = $1`,
+      [req.params.id]
+    );
+    if (!invRows[0]) return res.status(404).json({ success: false, message: 'Invoice not found' });
+
+    const [itemsRes, settingsRes] = await Promise.all([
+      pool.query(
+        `SELECT fii.description, fii.amount, fii.is_waived, fh.name AS head_name
+         FROM fee_invoice_items fii
+         LEFT JOIN fee_heads fh ON fh.id = fii.fee_head_id
+         WHERE fii.invoice_id = $1
+         ORDER BY fii.id`,
+        [req.params.id]
+      ),
+      pool.query(
+        `SELECT key, value FROM settings
+         WHERE key IN (
+           'school_name','school_address','school_phone','school_email',
+           'school_logo','currency',
+           'bank_name','bank_account_title','bank_account_no',
+           'bank_iban','bank_branch','bank_branch_code'
+         )`
+      ),
+    ]);
+
+    const settings = {};
+    settingsRes.rows.forEach(r => { settings[r.key] = r.value; });
+
+    streamChallanPdf(res, { invoice: invRows[0], items: itemsRes.rows, settings });
+  } catch (err) { serverErr(res, err); }
+};
+
+// ── GET /api/fees/reminder-log ────────────────────────────────────────────────
+const getReminderLog = async (req, res) => {
+  try {
+    const { invoice_id, student_id, channel, from, to, limit = 100, offset = 0 } = req.query;
+    const p = []; let q = `
+      SELECT rl.id, rl.invoice_id, rl.channel, rl.sent_to, rl.sent_at, rl.sent_date,
+             fi.invoice_no, s.full_name AS student_name, s.roll_number
+      FROM fee_reminder_log rl
+      JOIN fee_invoices fi ON fi.id = rl.invoice_id
+      JOIN students     s  ON s.id  = fi.student_id
+      WHERE 1=1`;
+    if (invoice_id) { p.push(invoice_id); q += ` AND rl.invoice_id=$${p.length}`; }
+    if (student_id) { p.push(student_id); q += ` AND fi.student_id=$${p.length}`; }
+    if (channel)    { p.push(channel);    q += ` AND rl.channel=$${p.length}`; }
+    if (from)       { p.push(from);       q += ` AND rl.sent_date>=$${p.length}`; }
+    if (to)         { p.push(to);         q += ` AND rl.sent_date<=$${p.length}`; }
+    q += ` ORDER BY rl.sent_at DESC LIMIT $${p.push(limit)} OFFSET $${p.push(offset)}`;
+    const { rows } = await pool.query(q, p);
+    res.json({ success: true, data: rows, total: rows.length });
+  } catch (err) { serverErr(res, err); }
+};
+
 // ── GET /api/fees/payments/import/template ───────────────────────
 const getPaymentImportTemplate = (_req, res) => {
   const csv = buildTemplate([
@@ -1628,9 +1711,11 @@ const exportFeesExcel = async (req, res, next) => {
     if (status)        { params.push(status);         where += ` AND fi.status = $${params.length}`; }
 
     const { rows } = await pool.query(
-      `SELECT fi.invoice_number, s.full_name, s.roll_number, c.name AS class_name,
+      `SELECT fi.invoice_no, s.full_name, s.roll_number, c.name AS class_name,
               fi.invoice_type, fi.billing_month, fi.total_amount, fi.discount_amount,
-              fi.fine_amount, fi.net_amount, fi.paid_amount, fi.status, fi.due_date
+              fi.fine_amount,
+              (fi.total_amount + COALESCE(fi.fine_amount,0) - COALESCE(fi.discount_amount,0)) AS net_amount,
+              fi.paid_amount, fi.status, fi.due_date
        FROM fee_invoices fi
        JOIN students s ON s.id = fi.student_id
        LEFT JOIN classes c ON c.id = s.class_id
@@ -1643,7 +1728,7 @@ const exportFeesExcel = async (req, res, next) => {
       title: 'Fee Collection Report', sheetName: 'Fees',
       subtitle: `Total Invoices: ${rows.length} | Month: ${billing_month || 'All'} | Exported: ${new Date().toLocaleDateString('en-PK')}`,
       columns: [
-        { key: 'invoice_number',  header: 'Invoice No',    width: 16 },
+        { key: 'invoice_no',      header: 'Invoice No',    width: 16 },
         { key: 'full_name',       header: 'Student',       width: 22 },
         { key: 'roll_number',     header: 'Roll No',       width: 10 },
         { key: 'class_name',      header: 'Class',         width: 14 },
@@ -1687,7 +1772,9 @@ const sendFeeReminders = async (req, res) => {
       `(fi.status = 'overdue' OR (fi.status IN ('unpaid','partial') AND fi.due_date BETWEEN '${today}' AND '${in3days}'))`;
 
     const { rows: invoices } = await client.query(`
-      SELECT fi.id, fi.invoice_no, fi.net_amount, fi.due_date, fi.status,
+      SELECT fi.id, fi.invoice_no,
+             (fi.total_amount + COALESCE(fi.fine_amount,0) - COALESCE(fi.discount_amount,0)) AS net_amount,
+             fi.due_date, fi.status,
              s.full_name AS student_name, s.parent_email, s.parent_phone
       FROM fee_invoices fi
       JOIN students s ON s.id = fi.student_id
@@ -1969,6 +2056,46 @@ const getSiblingVoucher = async (req, res) => {
   } catch (err) { serverErr(res, err); }
 };
 
+// GET /api/fees/reports/class-collection?billing_month=YYYY-MM
+const getClassFeeCollection = async (req, res) => {
+  try {
+    const { billing_month } = req.query;
+    if (!billing_month || !/^\d{4}-\d{2}$/.test(billing_month))
+      return res.status(400).json({ success: false, message: 'billing_month required (YYYY-MM)' });
+
+    const { rows } = await pool.query(`
+      SELECT
+        c.id                            AS class_id,
+        c.name                          AS class_name,
+        c.section,
+        COUNT(DISTINCT s.id)            AS total_students,
+        COALESCE(SUM(
+          inv.total_amount
+          + COALESCE(inv.fine_amount, 0)
+          - COALESCE(inv.discount_amount, 0)
+        ), 0)::NUMERIC(14,2)            AS total_billed,
+        COALESCE(SUM(inv.paid_amount), 0)::NUMERIC(14,2) AS total_collected,
+        COALESCE(SUM(
+          inv.total_amount
+          + COALESCE(inv.fine_amount, 0)
+          - COALESCE(inv.discount_amount, 0)
+          - inv.paid_amount
+        ), 0)::NUMERIC(14,2)            AS outstanding
+      FROM classes c
+      LEFT JOIN students s
+             ON s.class_id = c.id AND s.deleted_at IS NULL AND s.status = 'active'
+      LEFT JOIN fee_invoices inv
+             ON inv.student_id = s.id
+            AND inv.billing_month = $1
+            AND inv.status != 'cancelled'
+      GROUP BY c.id, c.name, c.section
+      ORDER BY c.name, c.section
+    `, [billing_month]);
+
+    res.json({ success: true, billing_month, data: rows });
+  } catch (err) { serverErr(res, err); }
+};
+
 module.exports = {
   getFeeHeads, createFeeHead, updateFeeHead, deleteFeeHead,
   getFeeStructures, upsertFeeStructure, deleteFeeStructure,
@@ -1977,8 +2104,9 @@ module.exports = {
   getMonthlySummary, getOutstandingBalances, getStudentFeeHistory, exportCSV, getDashboardStats,
   getInvoicePrint, getReceiptPrint, getBulkPrintData, getByClassReport, getDailyReport,
   getConcessions, saveConcession, deleteConcession, applyLateFees,
-  bulkRecordPayments, getChallanPrint,
+  bulkRecordPayments, getChallanPrint, getChallanPdf, getReminderLog,
   getPaymentImportTemplate, importFeePayments, exportFeesExcel,
   sendFeeReminders,
   getSiblingGroups, getSiblingVoucher,
+  getClassFeeCollection,
 };

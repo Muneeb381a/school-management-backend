@@ -754,6 +754,69 @@ const getTeacherQuickList = async (req, res) => {
   } catch (err) { serverErr(res, err); }
 };
 
+// ── GET /api/attendance/absence-streaks ────────────────────────────────────────
+// Returns students currently on a consecutive-absence streak >= min_days.
+// Query params: min_days (default 3), class_id (optional)
+const getAbsenceStreaks = async (req, res) => {
+  try {
+    const minDays = Math.max(1, parseInt(req.query.min_days) || 3);
+    const classId = req.query.class_id ? parseInt(req.query.class_id) : null;
+
+    // Window-function approach:
+    // 1. Label each absent row with a "group id" = date - row_number (gaps break groups)
+    // 2. Count consecutive absences per student per group
+    // 3. Keep only groups where count >= minDays AND the latest date in group = max date for that student
+    //    (meaning the streak is still ongoing)
+    const { rows } = await pool.query(`
+      WITH absent_rows AS (
+        SELECT
+          a.student_id,
+          a.date,
+          ROW_NUMBER() OVER (PARTITION BY a.student_id ORDER BY a.date) AS rn,
+          (a.date - (ROW_NUMBER() OVER (PARTITION BY a.student_id ORDER BY a.date) * INTERVAL '1 day'))::date AS grp
+        FROM attendance a
+        WHERE a.status = 'absent'
+          AND a.entity_type = 'student'
+          ${classId ? 'AND a.class_id = $2' : ''}
+      ),
+      streaks AS (
+        SELECT
+          student_id,
+          grp,
+          COUNT(*)                AS streak_length,
+          MIN(date)               AS streak_start,
+          MAX(date)               AS streak_end
+        FROM absent_rows
+        GROUP BY student_id, grp
+        HAVING COUNT(*) >= $1
+      ),
+      latest_absent AS (
+        SELECT student_id, MAX(date) AS last_absent_date
+        FROM attendance
+        WHERE status = 'absent' AND entity_type = 'student'
+        GROUP BY student_id
+      )
+      SELECT
+        s.id            AS student_id,
+        s.full_name     AS student_name,
+        s.roll_number,
+        s.father_phone,
+        c.name          AS class_name,
+        c.section,
+        sk.streak_length,
+        sk.streak_start,
+        sk.streak_end
+      FROM streaks sk
+      JOIN latest_absent la ON la.student_id = sk.student_id AND la.last_absent_date = sk.streak_end
+      JOIN students s ON s.id = sk.student_id AND s.deleted_at IS NULL
+      LEFT JOIN classes c ON c.id = s.class_id
+      ORDER BY sk.streak_length DESC, sk.streak_end DESC
+    `, classId ? [minDays, classId] : [minDays]);
+
+    res.json({ success: true, data: rows, total: rows.length, min_days: minDays });
+  } catch (err) { serverErr(res, err); }
+};
+
 module.exports = {
   getClassStudentsAttendance,
   getTeachersAttendance,
@@ -768,4 +831,5 @@ module.exports = {
   getStudentHistory,
   getAttendanceRegister,
   getTeacherQuickList,
+  getAbsenceStreaks,
 };

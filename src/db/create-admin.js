@@ -51,17 +51,17 @@ async function createAdmin() {
     } else {
       const hashed = await bcrypt.hash(password, 10);
       await pool.query(
-        `INSERT INTO users (username, password, role, name, is_active)
-         VALUES ($1, $2, 'admin', $3, TRUE)`,
+        `INSERT INTO users (username, password, role, name, is_active, must_change_password)
+         VALUES ($1, $2, 'admin', $3, TRUE, TRUE)`,
         [username.toLowerCase(), hashed, name]
       );
       console.log(`✅  Admin user created successfully!`);
     }
 
     console.log(`\n   Username : ${username.toLowerCase()}`);
-    console.log(`   Password : ${password}`);
     console.log(`   Name     : ${name}`);
-    console.log(`   Role     : admin\n`);
+    console.log(`   Role     : admin`);
+    console.log(`\n⚠️  Keep your password safe — it is not shown here.\n`);
 
   } catch (err) {
     console.error('❌  Error:', err.message);

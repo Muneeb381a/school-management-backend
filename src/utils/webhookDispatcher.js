@@ -97,4 +97,49 @@ function _httpPost(url, body, headers) {
   });
 }
 
-module.exports = { fireWebhooks, _dispatch };
+/**
+ * Middleware factory for verifying inbound webhook signatures.
+ *
+ * Usage on any route that receives webhooks from an external partner:
+ *   router.post('/callback', verifyInboundWebhook(process.env.PARTNER_WEBHOOK_SECRET), handler)
+ *
+ * The sender must include header:  X-Webhook-Signature: sha256=<hmac-hex>
+ * Computed as:  HMAC-SHA256(rawBody, secret)
+ *
+ * Responds 401 if header is missing, 403 if signature doesn't match.
+ */
+function verifyInboundWebhook(secret) {
+  return (req, res, next) => {
+    if (!secret) return next(); // no secret configured — skip (dev/test mode)
+
+    const header = req.headers['x-webhook-signature'] || req.headers['x-hub-signature-256'] || '';
+    if (!header) {
+      return res.status(401).json({ success: false, message: 'Missing X-Webhook-Signature header' });
+    }
+
+    const raw = req.rawBody;
+    if (!raw) {
+      return res.status(500).json({ success: false, message: 'Raw body unavailable — verify middleware order' });
+    }
+
+    // Header format: "sha256=<hex>"  (same format GitHub, Stripe, etc. use)
+    const provided = header.replace(/^sha256=/, '');
+    const expected = crypto.createHmac('sha256', secret).update(raw).digest('hex');
+
+    // Timing-safe comparison prevents timing attacks
+    let match = false;
+    try {
+      match = crypto.timingSafeEqual(Buffer.from(provided, 'hex'), Buffer.from(expected, 'hex'));
+    } catch {
+      match = false; // buffer lengths differ → invalid hex
+    }
+
+    if (!match) {
+      return res.status(403).json({ success: false, message: 'Webhook signature verification failed' });
+    }
+
+    next();
+  };
+}
+
+module.exports = { fireWebhooks, _dispatch, verifyInboundWebhook };

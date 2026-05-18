@@ -46,6 +46,15 @@ function logSlowQuery(text, duration) {
 //
 const schemaStore = new AsyncLocalStorage();
 
+// Valid PostgreSQL identifier: starts with letter/underscore, then alphanumeric/underscore
+const SAFE_SCHEMA_RE = /^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/;
+
+function assertSafeSchema(schema) {
+  if (schema && !SAFE_SCHEMA_RE.test(schema)) {
+    throw new Error(`Invalid tenant schema name: "${schema}"`);
+  }
+}
+
 // ── Wrapped pool.connect ──────────────────────────────────────────────────────
 // Returns a pg Client with search_path already set to the current tenant schema.
 // Controllers using pool.connect() for transactions get isolation for free.
@@ -56,7 +65,7 @@ async function connect() {
   const client = await _rawPoolConnect();
   const schema = schemaStore.getStore();
   if (schema) {
-    // search_path persists for this client's lifetime (until release)
+    assertSafeSchema(schema);
     await _rawClientQuery(client, `SET search_path TO "${schema}", public`);
   }
   return client;
@@ -82,6 +91,7 @@ async function query(text, params) {
   const schema = schemaStore.getStore();
 
   if (schema) {
+    assertSafeSchema(schema);
     // Tenant path — use a dedicated client so search_path is isolated
     const client = await _rawPoolConnect();
     try {

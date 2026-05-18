@@ -21,12 +21,22 @@ const forgotPasswordLimiter = rateLimit({
   keyGenerator: (req) => ipKeyGenerator(req),
 });
 
+// Reset-password token submission — 10 attempts/hour per IP (prevents token brute-force)
+const resetPasswordLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: { success: false, message: 'Too many reset attempts. Try again in 1 hour.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req),
+});
+
 // ── Public ────────────────────────────────────────────────────────
 router.post('/login',           loginValidator, login);
 router.post('/setup',           setupValidator, setup);
 router.post('/refresh',         refresh);   // no access token needed
 router.post('/forgot-password', forgotPasswordLimiter, forgotPassword);
-router.post('/reset-password',  resetPassword);
+router.post('/reset-password',  resetPasswordLimiter, resetPassword);
 
 // ── Protected ─────────────────────────────────────────────────────
 router.post('/logout',            verifyToken, logout);

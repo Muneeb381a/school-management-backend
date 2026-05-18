@@ -920,6 +920,151 @@ const getStudentsWithoutTransport = async (req, res) => {
   res.json({ success: true, data: rows });
 };
 
+// ── POST /api/transport/trips/start ──────────────────────────────────────────
+const startTrip = async (req, res) => {
+  const { bus_id, route_id, trip_type = 'morning', start_lat, start_lng } = req.body;
+  if (!bus_id) return res.status(400).json({ success: false, message: 'bus_id required' });
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: [trip] } = await client.query(
+      `INSERT INTO trip_sessions (bus_id, route_id, driver_id, trip_type, start_lat, start_lng)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [bus_id, route_id || null, req.user.id, trip_type, start_lat || null, start_lng || null]
+    );
+
+    await client.query(
+      `UPDATE buses SET trip_status='started', is_online=TRUE, last_seen=NOW() WHERE id=$1`,
+      [bus_id]
+    );
+
+    await client.query(
+      `INSERT INTO trip_events (trip_id, bus_id, event_type, lat, lng, description)
+       VALUES ($1,$2,'trip_started',$3,$4,'Trip started')`,
+      [trip.id, bus_id, start_lat || null, start_lng || null]
+    );
+
+    await client.query('COMMIT');
+    res.status(201).json({ success: true, data: trip });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    const { serverErr } = require('../utils/serverErr');
+    serverErr(res, err);
+  } finally { client.release(); }
+};
+
+// ── POST /api/transport/trips/:id/end ────────────────────────────────────────
+const endTrip = async (req, res) => {
+  const { end_lat, end_lng, total_km, notes } = req.body;
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: [trip] } = await client.query(
+      `UPDATE trip_sessions
+       SET status='completed', ended_at=NOW(), end_lat=$1, end_lng=$2, total_km=$3, notes=$4
+       WHERE id=$5 AND status='active' RETURNING *`,
+      [end_lat || null, end_lng || null, total_km || null, notes || null, req.params.id]
+    );
+    if (!trip) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Active trip not found' });
+    }
+
+    await client.query(
+      `UPDATE buses SET trip_status='idle', is_online=FALSE, last_seen=NOW() WHERE id=$1`,
+      [trip.bus_id]
+    );
+
+    await client.query(
+      `INSERT INTO trip_events (trip_id, bus_id, event_type, lat, lng, description)
+       VALUES ($1,$2,'trip_ended',$3,$4,'Trip ended')`,
+      [trip.id, trip.bus_id, end_lat || null, end_lng || null]
+    );
+
+    await client.query('COMMIT');
+    res.json({ success: true, data: trip });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    const { serverErr } = require('../utils/serverErr');
+    serverErr(res, err);
+  } finally { client.release(); }
+};
+
+// ── GET /api/transport/trips ──────────────────────────────────────────────────
+const listTrips = async (req, res) => {
+  try {
+    const { bus_id, status, trip_type, date, limit = 50, offset = 0 } = req.query;
+    const p = []; let q = `
+      SELECT ts.*, b.bus_number, b.vehicle_number,
+             r.route_name, u.username AS driver_username
+      FROM trip_sessions ts
+      LEFT JOIN buses b ON b.id = ts.bus_id
+      LEFT JOIN transport_routes r ON r.id = ts.route_id
+      LEFT JOIN users u ON u.id = ts.driver_id
+      WHERE 1=1`;
+    if (bus_id)    { p.push(bus_id);    q += ` AND ts.bus_id=$${p.length}`; }
+    if (status)    { p.push(status);    q += ` AND ts.status=$${p.length}`; }
+    if (trip_type) { p.push(trip_type); q += ` AND ts.trip_type=$${p.length}`; }
+    if (date)      { p.push(date);      q += ` AND ts.started_at::date=$${p.length}`; }
+    q += ` ORDER BY ts.started_at DESC LIMIT $${p.push(limit)} OFFSET $${p.push(offset)}`;
+    const { rows } = await db.query(q, p);
+    res.json({ success: true, data: rows });
+  } catch (err) { const { serverErr } = require('../utils/serverErr'); serverErr(res, err); }
+};
+
+// ── POST /api/transport/trips/:id/events ──────────────────────────────────────
+const logTripEvent = async (req, res) => {
+  try {
+    const { event_type, student_id, stop_id, lat, lng, speed, description } = req.body;
+    const VALID = ['near_pickup','student_picked','student_dropped','overspeed',
+                   'route_deviation','emergency','driver_online','driver_offline'];
+    if (!event_type || !VALID.includes(event_type)) {
+      return res.status(400).json({ success: false, message: `event_type must be one of: ${VALID.join(', ')}` });
+    }
+
+    const { rows: [session] } = await db.query(
+      'SELECT bus_id FROM trip_sessions WHERE id=$1', [req.params.id]
+    );
+    if (!session) return res.status(404).json({ success: false, message: 'Trip not found' });
+
+    const { rows: [event] } = await db.query(
+      `INSERT INTO trip_events (trip_id, bus_id, student_id, stop_id, event_type, lat, lng, speed, description)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [req.params.id, session.bus_id, student_id||null, stop_id||null,
+       event_type, lat||null, lng||null, speed||null, description||null]
+    );
+
+    // Update bus live location if coords provided
+    if (lat && lng) {
+      await db.query(
+        `UPDATE buses SET current_lat=$1, current_lng=$2, current_speed=$3, last_seen=NOW() WHERE id=$4`,
+        [lat, lng, speed||0, session.bus_id]
+      );
+    }
+
+    res.status(201).json({ success: true, data: event });
+  } catch (err) { const { serverErr } = require('../utils/serverErr'); serverErr(res, err); }
+};
+
+// ── GET /api/transport/trips/:id/events ───────────────────────────────────────
+const getTripEvents = async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT te.*, s.full_name AS student_name, rs.stop_name
+       FROM trip_events te
+       LEFT JOIN students s  ON s.id  = te.student_id
+       LEFT JOIN route_stops rs ON rs.id = te.stop_id
+       WHERE te.trip_id = $1
+       ORDER BY te.created_at ASC`,
+      [req.params.id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) { const { serverErr } = require('../utils/serverErr'); serverErr(res, err); }
+};
+
 module.exports = {
   getBuses, getBusById, createBus, updateBus, deleteBus,
   getRoutes, getRouteById, createRoute, updateRoute, deleteRoute,
@@ -928,4 +1073,5 @@ module.exports = {
   transferStudent, getTransferHistory,
   generatePdf,
   getSummary, getStudentsWithoutTransport,
+  startTrip, endTrip, listTrips, logTripEvent, getTripEvents,
 };

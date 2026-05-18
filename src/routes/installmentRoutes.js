@@ -9,7 +9,8 @@ router.get('/',                              asyncHandler(ctrl.getInstallments))
 router.get('/upcoming',                      asyncHandler(ctrl.getUpcomingInstallments));
 router.get('/overdue',                       asyncHandler(ctrl.getOverdueInstallments));
 router.post('/create',   requireRole('admin'), asyncHandler(ctrl.createInstallmentPlan));
-router.post('/:id/pay',  requireRole('admin'), asyncHandler(ctrl.payInstallment));
+router.post('/:id/pay',       requireRole('admin'), asyncHandler(ctrl.payInstallment));
+router.patch('/:id/reschedule', requireRole('admin'), asyncHandler(ctrl.rescheduleInstallment));
 router.delete('/invoice/:invoiceId', requireRole('admin'), asyncHandler(ctrl.deleteInstallmentPlan));
 
 module.exports = router;

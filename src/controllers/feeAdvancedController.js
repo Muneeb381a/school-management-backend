@@ -132,7 +132,7 @@ const runLateFeeEngine = async (req, res) => {
       // Find the most specific matching rule
       const rule = rules.find(r => {
         if (!r.is_active) return false;
-        if (daysOverdue < r.grace_days) return false;
+        if (daysOverdue < (r.grace_days || 0)) return false;
         if (r.applies_to === 'class' && r.class_id && r.class_id !== inv.class_id) return false;
         if (r.applies_to === 'grade' && r.grade && r.grade !== inv.grade) return false;
         return true;
@@ -145,7 +145,7 @@ const runLateFeeEngine = async (req, res) => {
       if (rule.recurs) {
         // Recurring: fine multiplied by how many intervals have passed
         const intervals = rule.recur_days > 0
-          ? Math.floor((daysOverdue - rule.grace_days) / rule.recur_days) + 1
+          ? Math.floor((daysOverdue - (rule.grace_days || 0)) / rule.recur_days) + 1
           : 1;
         const perInterval = rule.fine_type === 'percent'
           ? parseFloat(((base * parseFloat(rule.fine_value)) / 100).toFixed(2))
@@ -257,6 +257,16 @@ const getStudentLedger = async (req, res) => {
     const { studentId } = req.params;
     const { from, to } = req.query;
 
+    const invParams  = [studentId];
+    let   invDateCl  = '';
+    if (from) { invParams.push(from); invDateCl += ` AND fi.created_at::date >= $${invParams.length}`; }
+    if (to)   { invParams.push(to);   invDateCl += ` AND fi.created_at::date <= $${invParams.length}`; }
+
+    const payParams  = [studentId];
+    let   payDateCl  = '';
+    if (from) { payParams.push(from); payDateCl += ` AND fp.payment_date >= $${payParams.length}`; }
+    if (to)   { payParams.push(to);   payDateCl += ` AND fp.payment_date <= $${payParams.length}`; }
+
     const [stuRes, invRes, payRes] = await Promise.all([
       pool.query(
         `SELECT s.*, c.name AS class_name
@@ -271,20 +281,18 @@ const getStudentLedger = async (req, res) => {
                 (fi.total_amount + fi.fine_amount - fi.discount_amount) AS net_amount
          FROM fee_invoices fi
          WHERE fi.student_id = $1 AND fi.status != 'cancelled'
-           ${from ? `AND fi.created_at::date >= '${from}'` : ''}
-           ${to   ? `AND fi.created_at::date <= '${to}'`   : ''}
+           ${invDateCl}
          ORDER BY fi.created_at ASC, fi.id ASC`,
-        [studentId]
+        invParams
       ),
       pool.query(
         `SELECT fp.id, fp.receipt_no, fp.amount, fp.payment_date,
                 fp.payment_method, fp.invoice_id, fp.created_at
          FROM fee_payments fp
          WHERE fp.student_id = $1 AND fp.is_void = FALSE
-           ${from ? `AND fp.payment_date >= '${from}'` : ''}
-           ${to   ? `AND fp.payment_date <= '${to}'`   : ''}
+           ${payDateCl}
          ORDER BY fp.payment_date ASC, fp.id ASC`,
-        [studentId]
+        payParams
       ),
     ]);
 
@@ -680,9 +688,10 @@ const approveAdjustment = async (req, res) => {
 
     if (adj.type === 'waiver' || adj.type === 'correction') {
       const newDiscount = parseFloat(inv.discount_amount || 0) + parseFloat(adj.amount);
-      const net = parseFloat(inv.total_amount) + parseFloat(inv.fine_amount || 0) - newDiscount;
+      const gross = parseFloat(inv.total_amount) + parseFloat(inv.fine_amount || 0);
+      const net = Math.max(0, gross - newDiscount);
       const paid = parseFloat(inv.paid_amount || 0);
-      const newStatus = paid >= net - 0.01 ? 'paid' : paid > 0 ? 'partial' : net <= 0 ? 'waived' : inv.status;
+      const newStatus = net <= 0.01 ? 'waived' : paid >= net - 0.01 ? 'paid' : paid > 0 ? 'partial' : 'unpaid';
       updateQ = client.query(
         `UPDATE fee_invoices SET discount_amount=$1, status=$2, updated_at=NOW() WHERE id=$3`,
         [newDiscount, newStatus, adj.invoice_id]

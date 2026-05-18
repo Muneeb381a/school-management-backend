@@ -190,7 +190,32 @@ async function getOverdueInstallments(req, res) {
   res.json({ success: true, data: all, newly_marked_overdue: rows.length });
 }
 
+// ── PATCH /api/installments/:id/reschedule ────────────────────────────────────
+async function rescheduleInstallment(req, res) {
+  const { due_date, amount } = req.body;
+  if (!due_date) throw new AppError('due_date is required', 400);
+
+  const sets = ['due_date = $1', 'updated_at = NOW()'];
+  const vals = [due_date];
+  if (amount !== undefined && amount !== null) {
+    vals.push(amount);
+    sets.push(`amount = $${vals.length}`);
+  }
+  vals.push(+req.params.id);
+
+  const { rows: [row] } = await db.query(
+    `UPDATE fee_installments
+     SET ${sets.join(', ')}
+     WHERE id = $${vals.length} AND status != 'paid'
+     RETURNING *`,
+    vals
+  );
+  if (!row) throw new AppError('Installment not found or already paid', 404);
+  res.json({ success: true, data: row });
+}
+
 module.exports = {
   getInstallments, createInstallmentPlan, payInstallment,
   deleteInstallmentPlan, getUpcomingInstallments, getOverdueInstallments,
+  rescheduleInstallment,
 };

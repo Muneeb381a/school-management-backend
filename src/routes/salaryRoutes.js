@@ -5,6 +5,8 @@ const {
   getSalaryPayments, generateMonthlySalaries, updateSalaryPayment, markSalaryPaid, getSalarySlip,
   bulkMarkSalaryPaid, exportSalary, getMySlips,
   getSalaryPolicy, updateSalaryPolicy,
+  getTaxPreview,
+  listAdvances, requestAdvance, approveAdvance, rejectAdvance,
 } = require('../controllers/salaryController');
 const { requireRole }     = require('../middleware/authMiddleware');
 const { auditMiddleware } = require('../middleware/auditLog');
@@ -30,7 +32,14 @@ router.put('/payments/:id',              requireRole('admin'),            update
 router.post('/payments/:id/mark-paid',   requireRole('admin'),            markSalaryPaid);
 
 // ── Salary Policy ─────────────────────────────────────────────
-router.get('/policy', requireRole('admin'), getSalaryPolicy);
-router.put('/policy', requireRole('admin'), updateSalaryPolicy);
+router.get('/tax-preview', requireRole('admin', 'teacher'), getTaxPreview);
+router.get('/policy',     requireRole('admin'), getSalaryPolicy);
+router.put('/policy',     requireRole('admin'), updateSalaryPolicy);
+
+// ── Salary Advances ────────────────────────────────────────────
+router.get ('/advances',              requireRole('admin'),            listAdvances);
+router.post('/advances',              requireRole('admin'),            requestAdvance);
+router.patch('/advances/:id/approve', requireRole('admin'),            approveAdvance);
+router.patch('/advances/:id/reject',  requireRole('admin'),            rejectAdvance);
 
 module.exports = router;
